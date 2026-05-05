@@ -134,14 +134,22 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
     println("  Generating simulated data plot...")
     let
         labels = compute_table_assignments(sim.c)
-        p = plot(xlabel="y (counts)", ylabel="Frequency",
-                 title="$sname (λ=$(join(sim.λs, ", ")))", legend=:topright,
-                 tickfontsize=11, guidefontsize=13, titlefontsize=13)
-        for k in 1:K_TRUE
-            mask = labels .== k
-            stephist!(p, sim.y[mask]; label="λ=$(sim.λs[k])",
-                      color=palette(:tab10)[k], linewidth=1.5, normalize=false)
-        end
+        ys = minimum(sim.y):maximum(sim.y)
+        freq_matrix = [count(sim.y[labels .== k] .== y) for k in 1:K_TRUE, y in ys]
+        p = groupedbar(
+            freq_matrix';
+            bar_position = :dodge,
+            xticks = (1:length(ys), string.(ys)),
+            xlabel = "Count y",
+            ylabel = "Frequency",
+            title = "$sname (λ=$(join(sim.λs, ", ")))",
+            label = reshape(["λ=$(sim.λs[k])" for k in 1:K_TRUE], 1, :),
+            color = reshape([palette(:tab10)[k] for k in 1:K_TRUE], 1, :),
+            legend = :topright,
+            tickfontsize = 10,
+            guidefontsize = 12,
+            titlefontsize = 13,
+        )
         savefig(p, joinpath(figdir, "simulated_data.png"))
         println("    Saved simulated_data.png")
     end
@@ -327,16 +335,24 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
     println("  Generating data overview figure...")
     let
         true_labels = compute_table_assignments(sim.c)
+        λ_int = round.(Int, sim.λs)
 
-        p_hist = plot(xlabel="Count y", ylabel="Frequency",
-                      legend=:topright, tickfontsize=10, guidefontsize=12,
-                      left_margin=10Plots.mm, bottom_margin=8Plots.mm)
-        for k in 1:K_TRUE
-            mask = true_labels .== k
-            histogram!(p_hist, sim.y[mask];
-                       label="Cluster $k  (λ=$(sim.λs[k]))",
-                       color=CLUSTER_COLS[k], alpha=0.7, linewidth=0, normalize=false)
-        end
+        ys = minimum(sim.y):maximum(sim.y)
+        freq_matrix = [count(sim.y[true_labels .== k] .== y) for k in 1:K_TRUE, y in ys]
+        p_hist = groupedbar(
+            freq_matrix';
+            bar_position = :dodge,
+            xticks = (1:length(ys), string.(ys)),
+            xlabel = "Count y",
+            ylabel = "Frequency",
+            label = reshape(["Cluster $k  (λ=$(λ_int[k]))" for k in 1:K_TRUE], 1, :),
+            color = reshape([CLUSTER_COLS[k] for k in 1:K_TRUE], 1, :),
+            legend = :topright,
+            tickfontsize = 10,
+            guidefontsize = 12,
+            left_margin = 10Plots.mm,
+            bottom_margin = 8Plots.mm,
+        )
 
         p_scatter = plot(xlabel="Covariate x", ylabel="Count y",
                          legend=:topleft, tickfontsize=10, guidefontsize=12,
@@ -344,7 +360,7 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
         for k in 1:K_TRUE
             mask = true_labels .== k
             scatter!(p_scatter, sim.x[mask], sim.y[mask];
-                     label="Cluster $k  (λ=$(sim.λs[k]))",
+                     label="Cluster $k  (λ=$(λ_int[k]))",
                      color=CLUSTER_COLS[k], markersize=4, alpha=0.7,
                      markerstrokewidth=0)
         end
