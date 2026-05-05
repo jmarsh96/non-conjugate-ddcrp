@@ -3,9 +3,7 @@
 #
 # Simulation study for Poisson clustering (no population offset).
 #
-# Two scenarios:
-#   distinct    — cluster rates (1, 10, 20); easy separation
-#   overlapping — cluster rates (1,  4,  7); harder separation
+# Scenario: overlapping — cluster rates (1, 4, 7); harder separation
 #
 # Part 1 — Proposal-type sweep (parallel): 7 configs × 110,000 iterations
 #   Compares:
@@ -82,30 +80,30 @@ end
     jldsave(chain_path; samples=samples, burn=cfg.burn, thin=cfg.thin)
 
     return (
-        scenario     = cfg.scenario,
-        label        = cfg.label,
-        birth        = cfg.birth_label,
-        fdim         = cfg.fdim_label,
-        tune_param   = cfg.tune_param,
+        scenario = cfg.scenario,
+        label = cfg.label,
+        birth = cfg.birth_label,
+        fdim = cfg.fdim_label,
+        tune_param = cfg.tune_param,
         tune_param_r = cfg.tune_param_r,
-        n_post       = length(k_trace),
-        mean_K       = mean(k_trace),
-        mode_K       = Int(mode(k_trace)),
-        std_K        = std(Float64.(k_trace)),
-        prob_K_true  = mean(k_trace .== cfg.k_true),
-        acc_birth    = acc.birth,
-        acc_death    = acc.death,
-        acc_fixed    = acc.fixed,
-        acc_overall  = acc.overall,
-        mean_ari     = mean(ari_tr),
-        final_ari    = ari_tr[end],
-        mean_vi      = mean(vi_tr),
-        ess_K        = ess_K,
-        ess_logpost  = ess_logpost,
-        esjd_K       = esjd_K,
+        n_post = length(k_trace),
+        mean_K = mean(k_trace),
+        mode_K = Int(mode(k_trace)),
+        std_K = std(Float64.(k_trace)),
+        prob_K_true = mean(k_trace .== cfg.k_true),
+        acc_birth = acc.birth,
+        acc_death = acc.death,
+        acc_fixed = acc.fixed,
+        acc_overall = acc.overall,
+        mean_ari = mean(ari_tr),
+        final_ari = ari_tr[end],
+        mean_vi = mean(vi_tr),
+        ess_K = ess_K,
+        ess_logpost = ess_logpost,
+        esjd_K = esjd_K,
         esjd_logpost = esjd_logpost,
-        ess_per_sec  = ess_K / total_time,
-        total_time   = total_time,
+        ess_per_sec = ess_K / total_time,
+        total_time = total_time,
     )
 end
 
@@ -113,17 +111,17 @@ end
 # Constants
 # ============================================================================
 
-const N_SAMPLES_SWEEP = IS_TEST ? 1_000   : 110_000
-const BURN_SWEEP = IS_TEST ? 200     : 10_000
-const N_SAMPLES_TUNE  = IS_TEST ? 1_000   : 60_000
-const BURN_TUNE = IS_TEST ? 200     : 10_000
+const N_SAMPLES_SWEEP = IS_TEST ? 1_000 : 110_000
+const BURN_SWEEP = IS_TEST ? 200 : 10_000
+const N_SAMPLES_TUNE = IS_TEST ? 1_000 : 60_000
+const BURN_TUNE = IS_TEST ? 200 : 10_000
 const THIN = 5
 const K_TRUE = 3
 const N_OBS = 150
 
-const POISSON_DIR = IS_TEST  ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_test") :
-                   INFER_S  ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_infer_s") :
-                               joinpath(@__DIR__, "..", "results", "simulation_study", "poisson")
+const POISSON_DIR = IS_TEST ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_test") :
+    INFER_S ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_infer_s") :
+    joinpath(@__DIR__, "..", "results", "simulation_study", "poisson")
 mkpath(POISSON_DIR)
 
 # ============================================================================
@@ -155,27 +153,18 @@ function simulate_poisson(c, λs; seed=1)
     [rand(rng, Poisson(λs[labels[i]])) for i in eachindex(c)]
 end
 
-const Y_DISTINCT = simulate_poisson(C_FIXED, [1.0, 10.0, 20.0]; seed=1)
-const Y_OVERLAPPING = simulate_poisson(C_FIXED, [1.0,  4.0,  7.0]; seed=2)
+const Y_OVERLAPPING = simulate_poisson(C_FIXED, [1.0, 4.0, 7.0]; seed=2)
 
-const SIM_DISTINCT = (y=Y_DISTINCT, D=D_SIM, c=C_FIXED, x=x, λs=[1.0, 10.0, 20.0])
-const SIM_OVERLAPPING = (y=Y_OVERLAPPING, D=D_SIM, c=C_FIXED, x=x, λs=[1.0,  4.0,  7.0])
+const SIM_OVERLAPPING = (y=Y_OVERLAPPING, D=D_SIM, c=C_FIXED, x=x, λs=[1.0, 4.0, 7.0])
 
-jldsave(
-    joinpath(POISSON_DIR, "sim_data.jld2");
-    sim_distinct=SIM_DISTINCT, sim_overlapping=SIM_OVERLAPPING
-)
+jldsave(joinpath(POISSON_DIR, "sim_data.jld2"); sim_overlapping=SIM_OVERLAPPING)
 println("Saved sim_data.jld2")
-@printf(
-    "Distinct    y: min=%d max=%d  (true λ = %s)\n",
-    minimum(Y_DISTINCT), maximum(Y_DISTINCT), join(SIM_DISTINCT.λs, ", ")
-)
 @printf(
     "Overlapping y: min=%d max=%d  (true λ = %s)\n",
     minimum(Y_OVERLAPPING), maximum(Y_OVERLAPPING), join(SIM_OVERLAPPING.λs, ", ")
 )
 
-const SCENARIOS = [("distinct", SIM_DISTINCT), ("overlapping", SIM_OVERLAPPING)]
+const SCENARIOS = [("overlapping", SIM_OVERLAPPING)]
 
 # ============================================================================
 # Shared model settings
@@ -199,28 +188,28 @@ function make_cfg(label, scenario_name, sim, model, priors, birth, fdim,
                   seed=42, n_samples=N_SAMPLES_SWEEP, burn=BURN_SWEEP,
                   tune_param=NaN, tune_param_r=NaN, filename_suffix="")
     (
-        label          = label,
-        scenario       = scenario_name,
-        model          = model,
-        priors         = priors,
-        birth          = birth,
-        fdim           = fdim,
-        birth_label    = birth_label,
-        fdim_label     = fdim_label,
-        y              = sim.y,
-        D              = sim.D,
-        true_c         = sim.c,
-        k_true         = K_TRUE,
-        ddcrp_params   = DDCRP_PARAMS,
-        n_samples      = n_samples,
-        burn           = burn,
-        thin           = THIN,
-        outdir         = POISSON_DIR,
+        label = label,
+        scenario = scenario_name,
+        model = model,
+        priors = priors,
+        birth = birth,
+        fdim = fdim,
+        birth_label = birth_label,
+        fdim_label = fdim_label,
+        y = sim.y,
+        D = sim.D,
+        true_c = sim.c,
+        k_true = K_TRUE,
+        ddcrp_params = DDCRP_PARAMS,
+        n_samples = n_samples,
+        burn = burn,
+        thin = THIN,
+        outdir = POISSON_DIR,
         chain_filename = fmtlabel(label) * "_" * scenario_name * filename_suffix * ".jld2",
-        seed           = seed,
-        tune_param     = tune_param,
-        tune_param_r   = tune_param_r,
-        infer_s        = INFER_S,
+        seed = seed,
+        tune_param = tune_param,
+        tune_param_r = tune_param_r,
+        infer_s = INFER_S,
     )
 end
 
@@ -240,10 +229,10 @@ function print_summary_table(df, title, thin_factor)
     println(header)
     println("-" ^ W)
     for r in eachrow(df)
-        b_pct = isnan(r.acc_birth)    ? "   —  " : @sprintf("%6.3f", r.acc_birth   * 100)
-        o_pct = isnan(r.acc_overall)  ? "   —  " : @sprintf("%6.3f", r.acc_overall * 100)
-        σb_str = isnan(r.tune_param)   ? "  —  "  : @sprintf("%5.2f", r.tune_param)
-        σr_str = isnan(r.tune_param_r) ? "  —  "  : @sprintf("%5.2f", r.tune_param_r)
+        b_pct = isnan(r.acc_birth) ? "   —  " : @sprintf("%6.3f", r.acc_birth * 100)
+        o_pct = isnan(r.acc_overall) ? "   —  " : @sprintf("%6.3f", r.acc_overall * 100)
+        σb_str = isnan(r.tune_param) ? "  —  " : @sprintf("%5.2f", r.tune_param)
+        σr_str = isnan(r.tune_param_r) ? "  —  " : @sprintf("%5.2f", r.tune_param_r)
         println(
             rpad(r.label, 48) * "  " *
             rpad(r.birth, 10) * "  " *
@@ -386,7 +375,7 @@ println("\n$(repeat('=', 80))")
 println("Part 2: Tuning sweep ($(length(tune_configs)) configs × $(N_SAMPLES_TUNE) iterations)")
 println("  NoUpdate: σ_birth ∈ $(σ_BIRTH_SWEEP)  ($n_noupdate configs)")
 println("  Resample: σ_birth × σ_resample grid   ($n_resample configs)")
-println("  proposals: NMM, LNMM  ×  scenarios: distinct, overlapping")
+println("  proposals: NMM, LNMM  ×  scenario: overlapping")
 println("$(repeat('=', 80))\n")
 
 tune_rows = pmap(run_and_save, tune_configs)
@@ -418,20 +407,21 @@ for (sname, _) in SCENARIOS
                 uppercase(pname), p_nu.σ_b,
                 maximum(
                     [isnan(r.esjd_K) ? -Inf : r.esjd_K
-                             for r in eachrow(tune_df[
-                                 (tune_df.scenario .== sname) .&
-                                 (tune_df.birth .== pname) .&
-                                 (tune_df.fdim .== "none"), :])]))
+                        for r in eachrow(tune_df[
+                            (tune_df.scenario .== sname) .&
+                            (tune_df.birth .== pname) .&
+                            (tune_df.fdim .== "none"), :])]))
         end
         p_rs = best_params(tune_df, sname, pname, "resample")
         if !isnothing(p_rs)
-            @printf("    %-6s + Resample   σ_b = %.2f  σ_r = %.2f  ESJD(K) = %.6f\n",
-                    uppercase(pname), p_rs.σ_b, p_rs.σ_r,
-                    maximum([isnan(r.esjd_K) ? -Inf : r.esjd_K
-                             for r in eachrow(tune_df[
-                                 (tune_df.scenario .== sname) .&
-                                 (tune_df.birth .== pname) .&
-                                 (tune_df.fdim .== "resample"), :])]))
+            @printf(
+                "    %-6s + Resample   σ_b = %.2f  σ_r = %.2f  ESJD(K) = %.6f\n",
+                uppercase(pname), p_rs.σ_b, p_rs.σ_r,
+                maximum([isnan(r.esjd_K) ? -Inf : r.esjd_K
+                    for r in eachrow(tune_df[
+                        (tune_df.scenario .== sname) .&
+                        (tune_df.birth .== pname) .&
+                        (tune_df.fdim .== "resample"), :])]))
         end
     end
 end
@@ -457,7 +447,7 @@ for (sname, sim) in SCENARIOS
 
         if fdim_name == "none"
             fdim_obj = NoUpdate()
-            label    = "Pois $(uppercase(pname)) σ=$(σ_b_tag) + NoUpdate [best]"
+            label = "Pois $(uppercase(pname)) σ=$(σ_b_tag) + NoUpdate [best]"
             push!(final_rjmcmc_cfgs, make_cfg(
                 label, sname, sim,
                 PoissonClusterRates(), PRIORS,
@@ -468,7 +458,7 @@ for (sname, sim) in SCENARIOS
                 filename_suffix = "_final",
             ))
         else
-            σ_r_tag  = @sprintf("%.2f", p.σ_r)
+            σ_r_tag = @sprintf("%.2f", p.σ_r)
             fdim_obj = Resample(make_prop(p.σ_r))
             label = "Pois $(uppercase(pname)) sb=$(σ_b_tag) sr=$(σ_r_tag) + Resample [best]"
             push!(final_rjmcmc_cfgs, make_cfg(
@@ -491,10 +481,10 @@ println("  Gibbs + Prior baselines (from Part 1) + $(length(final_rjmcmc_cfgs)) 
 println("$(repeat('=', 80))\n")
 
 final_rjmcmc_rows = pmap(run_and_save, final_rjmcmc_cfgs)
-final_rjmcmc_df   = DataFrame(collect(final_rjmcmc_rows))
+final_rjmcmc_df = DataFrame(collect(final_rjmcmc_rows))
 
 baselines_df = filter(:birth => b -> b in ("conjugate", "prior"), sweep_df)
-final_df     = vcat(baselines_df, final_rjmcmc_df)
+final_df = vcat(baselines_df, final_rjmcmc_df)
 
 for (sname, _) in SCENARIOS
     sub = filter(r -> r.scenario == sname, final_df)

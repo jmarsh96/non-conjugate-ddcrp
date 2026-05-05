@@ -30,9 +30,9 @@ const OPTS = MCMCOptions(
     n_samples = N_SAMPLES,
     verbose = true,
     infer_params = Dict(
-        :α => true, 
+        :α => true,
         :c => true,
-        :α_ddcrp => true, 
+        :α_ddcrp => true,
         :s_ddcrp => false
     ),
     prop_sds = Dict(:α => 0.5, :s_ddcrp => 0.3),
