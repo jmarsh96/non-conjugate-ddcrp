@@ -13,7 +13,7 @@ const MODEL = GammaClusterShapeMarg()
 
 α_init = 1.0
 s_init = 0.2
-decay_fn = DDCRP.exp_decay
+decay_fn = DistanceDependentCRP.exp_decay
 α_prior_a = 1.0
 α_prior_b = 0.01
 s_prior_a = 1.0
