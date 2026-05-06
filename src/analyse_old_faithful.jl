@@ -109,7 +109,7 @@ p_k_trace = plot(k_trace; xlabel="Iteration", ylabel="Number of clusters",
 p_lp_trace = plot(samples.logpost; xlabel="Iteration", ylabel="Log-posterior",
                   common_trace_kw...)
 
-fig2 = plot(p_k_trace, p_lp_trace; layout=(1, 2), size=(900, 320))  # width ∝ 0.62
+fig2 = plot(p_k_trace, p_lp_trace; layout=(1, 2), size=(900, 320))
 savefig(fig2, joinpath(FIGDIR, "traces.png"))
 println("  Saved traces.png")
 
@@ -117,7 +117,6 @@ println("  Saved traces.png")
 
 println("\nGenerating MAP clustering + arrows figure...")
 
-# Restrict to posterior mode K
 k_mode = mode(k_trace)
 k3_idx = findall(k_trace .== k_mode)
 map_idx = k3_idx[argmax(samples.logpost[k3_idx])]
@@ -138,7 +137,6 @@ p_map = plot(
     bottom_margin = 5Plots.mm,
 )
 
-# Compute posterior link probabilities (conditioning on posterior mode K)
 println("  Computing link probabilities (K=$k_mode samples)...")
 link_prob = zeros(n, n)
 for iter in k3_idx
@@ -149,13 +147,11 @@ for iter in k3_idx
 end
 link_prob ./= length(k3_idx)
 
-# Draw arrows first (underneath scatter), opacity driven by posterior probability
 threshold = 0.02
 p_max = maximum(link_prob[i, j] for i in 1:n, j in 1:n if i != j)
 arrow_cmap = cgrad(:YlOrRd, [0.0, 1.0])
 
 for i in 1:n
-    # Always show the strongest outgoing link; additionally show any above threshold
     row = [j == i ? -Inf : link_prob[i, j] for j in 1:n]
     top_js = Set(partialsortperm(row, 1:3, rev=true))
     for j in 1:n
@@ -170,13 +166,11 @@ for i in 1:n
     end
 end
 
-# Empty scatter to register the colorbar (no points drawn, no arcs)
 scatter!(p_map, Float64[], Float64[];
          zcolor=Float64[], color=arrow_cmap, colorbar=true,
          colorbar_title="\nPosterior link prob.", clims=(0.0, p_max),
          label=false)
 
-# Scatter colored by MAP cluster
 for (ci, k) in enumerate(clusters)
     mask = z_map .== k
     scatter!(p_map, w[mask], y[mask];
@@ -188,74 +182,39 @@ fig3 = plot(p_map; size=(800, 560))
 savefig(fig3, joinpath(FIGDIR, "map_clustering_arrows.png"))
 println("  Saved map_clustering_arrows.png")
 
-# ── Figure 3b: Unconditioned MAP clustering + link probabilities ──────────────
+# ── Figure 4: Co-clustering probability heatmap ───────────────────────────────
 
-println("\nGenerating unconditioned MAP clustering figure...")
-
-# Overall MAP sample (no K conditioning)
-map_idx_all = argmax(samples.logpost)
-c_map_all = samples.c[map_idx_all, :]
-z_map_all = compute_table_assignments(c_map_all)
-clusters_all = sort(unique(z_map_all))
-
-# Link probabilities over all iterations
-println("  Computing link probabilities (all samples)...")
-link_prob_all = zeros(n, n)
+println("\nGenerating co-clustering network figure...")
+coclustering = zeros(n, n)
 for iter in 1:n_samp
-    for i in 1:n
-        j = samples.c[iter, i]
-        link_prob_all[i, j] += 1
+    z = compute_table_assignments(samples.c[iter, :])
+    for k in unique(z)
+        idx_k = findall(z .== k)
+        coclustering[idx_k, idx_k] .+= 1
     end
 end
-link_prob_all ./= n_samp
+coclustering ./= n_samp
 
-p_map_all = plot(
-    xlabel = "Waiting time (min)",
-    ylabel = "Eruption duration (min)",
-    title = "MAP clustering with posterior link probabilities (unconditioned)",
-    legend = :topleft,
-    tickfontsize = 10,
-    guidefontsize = 12,
+sort_idx = sortperm(z_map)
+fig4 = heatmap(
+    coclustering[sort_idx, sort_idx];
+    color = :Blues,
+    clims = (0.0, 1.0),
+    xlabel = "Observation (sorted by MAP cluster)",
+    ylabel = "Observation (sorted by MAP cluster)",
+    title = "Posterior co-clustering probabilities",
+    colorbar_title = "P(same cluster)",
+    tickfontsize = 9,
+    guidefontsize = 11,
     titlefontsize = 12,
     left_margin = 8Plots.mm,
-    right_margin = 20Plots.mm,
     bottom_margin = 5Plots.mm,
+    size = (560, 480),
 )
+savefig(fig4, joinpath(FIGDIR, "coclustering_network.png"))
+println("  Saved coclustering_network.png")
 
-threshold_all = 0.02
-p_max_all = maximum(link_prob_all[i, j] for i in 1:n, j in 1:n if i != j)
-
-for i in 1:n
-    top_j = argmax([j == i ? -Inf : link_prob_all[i, j] for j in 1:n])
-    for j in 1:n
-        i == j && continue
-        p = link_prob_all[i, j]
-        p < threshold_all && j != top_j && continue
-        quiver!(p_map_all, [w[i]], [y[i]];
-                quiver = ([w[j] - w[i]], [y[j] - y[i]]),
-                color = get(arrow_cmap, 0.3 + 0.7 * p / p_max_all),
-                linewidth = clamp(p / p_max_all * 2.5, 0.6, 2.5),
-                label = false)
-    end
-end
-
-scatter!(p_map_all, Float64[], Float64[];
-         zcolor=Float64[], color=arrow_cmap, colorbar=true,
-         colorbar_title="\nPosterior link prob.", clims=(0.0, p_max_all),
-         label=false)
-
-for (ci, k) in enumerate(clusters_all)
-    mask = z_map_all .== k
-    scatter!(p_map_all, w[mask], y[mask];
-             label="Cluster $ci", color=palette(:tab10)[ci],
-             markersize=4, alpha=0.85, markerstrokewidth=0.3)
-end
-
-fig3b = plot(p_map_all; size=(800, 560))
-savefig(fig3b, joinpath(FIGDIR, "map_clustering_arrows_unconditioned.png"))
-println("  Saved map_clustering_arrows_unconditioned.png")
-
-# ── Figure 4: Posterior Predictive Check ─────────────────────────────────────
+# ── Figure 5: Posterior Predictive Check ─────────────────────────────────────
 
 println("\nComputing posterior predictive check...")
 
@@ -297,7 +256,6 @@ p_ppc = plot(
     bottom_margin = 5Plots.mm,
 )
 
-# 95% credible interval lines
 for i in 1:n
     plot!(p_ppc, [i, i], [ppd_lower[i], ppd_upper[i]];
           color=:lightblue, alpha=0.6, linewidth=1.2, label=false)
@@ -310,8 +268,8 @@ scatter!(p_ppc, 1:n, y;
          color=:red, markersize=3, label="Observed", alpha=0.6,
          markerstrokewidth=0.3)
 
-fig4 = plot(p_ppc; size=(900, 480))
-savefig(fig4, joinpath(FIGDIR, "ppc.png"))
+fig5 = plot(p_ppc; size=(900, 480))
+savefig(fig5, joinpath(FIGDIR, "ppc.png"))
 println("  Saved ppc.png")
 
 println("\nAnalysis complete. Figures in: $FIGDIR")
