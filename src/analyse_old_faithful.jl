@@ -182,39 +182,7 @@ fig3 = plot(p_map; size=(800, 560))
 savefig(fig3, joinpath(FIGDIR, "map_clustering_arrows.png"))
 println("  Saved map_clustering_arrows.png")
 
-# ── Figure 4: Co-clustering probability heatmap ───────────────────────────────
-
-println("\nGenerating co-clustering network figure...")
-coclustering = zeros(n, n)
-for iter in 1:n_samp
-    z = compute_table_assignments(samples.c[iter, :])
-    for k in unique(z)
-        idx_k = findall(z .== k)
-        coclustering[idx_k, idx_k] .+= 1
-    end
-end
-coclustering ./= n_samp
-
-sort_idx = sortperm(z_map)
-fig4 = heatmap(
-    coclustering[sort_idx, sort_idx];
-    color = :Blues,
-    clims = (0.0, 1.0),
-    xlabel = "Observation (sorted by MAP cluster)",
-    ylabel = "Observation (sorted by MAP cluster)",
-    title = "Posterior co-clustering probabilities",
-    colorbar_title = "P(same cluster)",
-    tickfontsize = 9,
-    guidefontsize = 11,
-    titlefontsize = 12,
-    left_margin = 8Plots.mm,
-    bottom_margin = 5Plots.mm,
-    size = (560, 480),
-)
-savefig(fig4, joinpath(FIGDIR, "coclustering_network.png"))
-println("  Saved coclustering_network.png")
-
-# ── Figure 5: Posterior Predictive Check ─────────────────────────────────────
+# ── Figure 4: Posterior Predictive Check ─────────────────────────────────────
 
 println("\nComputing posterior predictive check...")
 
@@ -268,8 +236,8 @@ scatter!(p_ppc, 1:n, y;
          color=:red, markersize=3, label="Observed", alpha=0.6,
          markerstrokewidth=0.3)
 
-fig5 = plot(p_ppc; size=(900, 480))
-savefig(fig5, joinpath(FIGDIR, "ppc.png"))
+fig4 = plot(p_ppc; size=(900, 480))
+savefig(fig4, joinpath(FIGDIR, "ppc.png"))
 println("  Saved ppc.png")
 
 println("\nAnalysis complete. Figures in: $FIGDIR")
