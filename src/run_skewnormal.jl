@@ -213,7 +213,9 @@ end
 # ============================================================================
 
 const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
-const PRIORS = SkewNormalClustersPriors(ξ_m=0.0, ξ_s=20.0, ω_a=3.0, ω_b=4.0, α_m=0.0, α_s=5.0)
+# Deliberately diffuse (uninformative) priors: wide location, heavy-tailed scale
+# (InverseGamma shape 2 ⇒ infinite variance), wide skew.
+const PRIORS = SkewNormalClustersPriors(ξ_m=0.0, ξ_s=50.0, ω_a=2.0, ω_b=2.0, α_m=0.0, α_s=10.0)
 
 # ============================================================================
 # Config builder

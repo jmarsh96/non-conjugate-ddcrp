@@ -27,7 +27,7 @@ using Distributions, Statistics, StatsBase, Random
 import DistanceDependentCRP: cluster_param_dicts, table_contribution, posterior,
     update_params!, sample_birth_params, birth_params_logpdf,
     sample_birth_param, birth_param_logpdf,
-    initialise_state, allocate_samples, extract_samples!
+    initialise_state, allocate_samples, extract_samples!, posterior_predictive
 
 const DD = DistanceDependentCRP
 
@@ -396,4 +396,43 @@ function extract_samples!(::SkewNormalClusters, state::SkewNormalClustersState,
             samples.α[iter, i] = αv
         end
     end
+end
+
+# ============================================================================
+# Model comparison and posterior predictive (see `model_comparison.jl`)
+# ============================================================================
+
+"""
+    loglik_matrix(::SkewNormalClusters, samples, data) -> Matrix
+
+`(n_draws × n_obs)` matrix of `log p(y_i | ξ^(s)_i, ω^(s)_i, α^(s)_i)`, the input
+WAIC, LPML and PSIS-LOO are computed from. Pass an already-thinned samples object.
+"""
+function loglik_matrix(::SkewNormalClusters, samples::SkewNormalClustersSamples, data)
+    y = observations(data)
+    S, n = size(samples.ξ)
+    ll = Matrix{Float64}(undef, S, n)
+    for i in 1:n, s in 1:S
+        ω = samples.ω[s, i]
+        ll[s, i] = ω > 0 ? logpdf(SkewNormal(samples.ξ[s, i], ω, samples.α[s, i]), y[i]) : -Inf
+    end
+    return ll
+end
+
+"""
+    posterior_predictive(::SkewNormalClusters, samples, data; n_rep=nothing)
+
+Draw one replicate dataset `y_rep` per retained posterior draw from that draw's
+per-observation (ξ, ω, α). Returns an `(n_draws × n_obs)` matrix.
+"""
+function posterior_predictive(::SkewNormalClusters, samples::SkewNormalClustersSamples,
+        data; n_rep::Union{Nothing,Int} = nothing)
+    S, n = size(samples.ξ)
+    draws = isnothing(n_rep) ? (1:S) : round.(Int, range(1, S; length = min(n_rep, S)))
+    y_rep = zeros(length(draws), n)
+    for (s_idx, s) in enumerate(draws), i in 1:n
+        y_rep[s_idx, i] = rand(SkewNormal(samples.ξ[s, i], max(samples.ω[s, i], 1e-8),
+                                          samples.α[s, i]))
+    end
+    return y_rep
 end
