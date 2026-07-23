@@ -18,11 +18,17 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=logs/ddcrp_rd_analysis_%j.out
 #SBATCH --error=logs/ddcrp_rd_analysis_%j.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=j.s.marsh@bham.ac.uk
+
 
 set -euo pipefail
 
-cd "${SLURM_SUBMIT_DIR:-.}"
-source src/slurm/env.sh
+module purge
+module load bear-apps/2024a
+module load bluebear
+module load Julia/1.12.2-linux-x86_64
+module load R/4.5.0-gfbf-2024a
 
 mkdir -p logs
 

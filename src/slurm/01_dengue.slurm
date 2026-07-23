@@ -25,22 +25,18 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/ddcrp_dengue_%j.out
 #SBATCH --error=logs/ddcrp_dengue_%j.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=j.s.marsh@bham.ac.uk
+
 
 set -euo pipefail
 
-cd "${SLURM_SUBMIT_DIR:-.}"
-source src/slurm/env.sh
+module purge
+module load bear-apps/2024a
+module load bluebear
+module load Julia/1.12.2-linux-x86_64
 
 mkdir -p logs
-
-# The dataset is committed to data/, so no internet access is needed here.
-# Re-fetching it (prepare_dengue_data.jl) must be done on a login node.
-if [[ ! -f data/dengue_uf41_2024.csv ]]; then
-  echo "ERROR: data/dengue_uf41_2024.csv is missing." >&2
-  echo "  Run this on a login node first (it needs internet access):" >&2
-  echo "    julia --project=. src/prepare_dengue_data.jl --uf 41 --year 2024" >&2
-  exit 1
-fi
 
 julia --project=. src/run_dengue.jl --slurm
 
