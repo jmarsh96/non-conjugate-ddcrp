@@ -24,13 +24,30 @@
 
 set -euo pipefail
 
-module purge
-module load bear-apps/2024a
-module load bluebear
-module load Julia/1.12.2-linux-x86_64
-module load R/4.5.0-gfbf-2024a
-
 mkdir -p logs
+
+# The Julia and R module trees must NOT be loaded at the same time: the
+# gfbf/2024a toolchain that R pulls in puts its own GLib on LD_LIBRARY_PATH,
+# which shadows the GLib that Julia's Glib_jll artifact (used by the GR/Plots
+# backend) expects. That mismatch makes Julia die at startup with
+# "libgobject-2.0.so: undefined symbol: g_string_copy". So each language runs
+# in its own subshell with only its own modules loaded.
+
+run_julia() {
+  ( module purge
+    module load bear-apps/2024a
+    module load bluebear
+    module load Julia/1.12.2-linux-x86_64
+    julia --project=. "$@" )
+}
+
+run_r() {
+  ( module purge
+    module load bear-apps/2024a
+    module load bluebear
+    module load R/4.5.0-gfbf-2024a
+    Rscript "$@" )
+}
 
 status=0
 ran=0
@@ -38,8 +55,8 @@ ran=0
 if [[ -f results/real_data/dengue/run_metadata.jld2 ]]; then
   echo "=== dengue ==="
   ran=1
-  julia --project=. src/analyse_dengue.jl || status=1
-  Rscript src/map_dengue.R || status=1
+  run_julia src/analyse_dengue.jl || status=1
+  run_r src/map_dengue.R || status=1
 else
   echo "SKIP dengue — results/real_data/dengue/run_metadata.jld2 not found."
 fi
@@ -48,8 +65,8 @@ echo
 if [[ -f results/real_data/aqs/run_metadata.jld2 ]]; then
   echo "=== AQS ==="
   ran=1
-  julia --project=. src/analyse_aqs.jl || status=1
-  Rscript src/map_aqs.R || status=1
+  run_julia src/analyse_aqs.jl || status=1
+  run_r src/map_aqs.R || status=1
 else
   echo "SKIP AQS — results/real_data/aqs/run_metadata.jld2 not found."
 fi
