@@ -39,14 +39,18 @@ module load Julia/1.12.2-linux-x86_64
 
 mkdir -p logs
 
-julia --project=. src/setup_environment.jl --fresh
+#julia --project=. src/setup_environment.jl --fresh
 
 module purge
 module load bear-apps/2024a
 module load bluebear
 module load R/4.5.0-gfbf-2024a
+module load UDUNITS/2.2.28-GCCcore-13.3.0
+module load GDAL/3.10.0-foss-2024a
+module load GEOS/3.12.2-GCC-13.3.0
+module load PROJ/9.4.1-GCCcore-13.3.0
 
-Rscript -e 'install.packages(c("sf","ggplot2","dplyr"), repos="https://cloud.r-project.org")'
+Rscript -e 'install.packages(c("Rcpp", "units","sf","ggplot2","dplyr"), repos="https://cloud.r-project.org")'
 
 echo
 echo "Setup complete."
