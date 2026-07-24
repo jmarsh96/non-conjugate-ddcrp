@@ -22,7 +22,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --time=00:20:00
+#SBATCH --time=00:30:00
 #SBATCH --output=logs/ddcrp_setup_%j.out
 #SBATCH --error=logs/ddcrp_setup_%j.err
 #SBATCH --mail-type=ALL
@@ -32,13 +32,21 @@
 set -euo pipefail
 
 module purge
-module load bluebear
 module load bear-apps/2024a
+module load bluebear
 module load Julia/1.12.2-linux-x86_64
+
 
 mkdir -p logs
 
 julia --project=. src/setup_environment.jl --fresh
+
+module purge
+module load bear-apps/2024a
+module load bluebear
+module load R/4.5.0-gfbf-2024a
+
+Rscript -e 'install.packages(c("sf","ggplot2","dplyr"), repos="https://cloud.r-project.org")'
 
 echo
 echo "Setup complete."
