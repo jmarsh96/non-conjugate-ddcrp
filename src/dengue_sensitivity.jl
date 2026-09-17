@@ -358,9 +358,9 @@ end
 # Constants
 # ============================================================================
 
-# Full length matches the 250k-iteration headline dengue chains, so the
+# Full length matches the 150k-iteration headline dengue chains, so the
 # sensitivity configurations are compared at the same Monte Carlo precision.
-const N_SAMPLES = arg_value("--iterations", IS_TEST ? 1_000 : 250_000)
+const N_SAMPLES = arg_value("--iterations", IS_TEST ? 1_000 : 150_000)
 const BURN      = arg_value("--burn",       IS_TEST ?   200 :  50_000)
 const THIN      = arg_value("--thin",       IS_TEST ?     5 :      10)
 BURN < N_SAMPLES || error("--burn ($BURN) must be below --iterations ($N_SAMPLES)")
