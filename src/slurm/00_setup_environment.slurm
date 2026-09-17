@@ -39,7 +39,7 @@ module load Julia/1.12.2-linux-x86_64
 
 mkdir -p logs
 
-#julia --project=. src/setup_environment.jl --fresh
+julia --project=. src/setup_environment.jl --fresh
 
 module purge
 module load bear-apps/2024a
