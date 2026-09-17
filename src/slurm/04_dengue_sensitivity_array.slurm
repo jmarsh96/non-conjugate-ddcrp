@@ -40,7 +40,6 @@ done
 
 module purge
 module load bear-apps/2024a
-module load bluebear
 module load Julia/1.12.2-linux-x86_64
 
 julia --project=. src/dengue_sensitivity.jl --task "${SLURM_ARRAY_TASK_ID}" \

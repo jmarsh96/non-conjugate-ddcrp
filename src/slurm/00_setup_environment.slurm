@@ -33,7 +33,6 @@ set -euo pipefail
 
 module purge
 module load bear-apps/2024a
-module load bluebear
 module load Julia/1.12.2-linux-x86_64
 
 
@@ -43,7 +42,6 @@ julia --project=. src/setup_environment.jl --fresh
 
 module purge
 module load bear-apps/2024a
-module load bluebear
 module load R/4.5.0-gfbf-2024a
 module load UDUNITS/2.2.28-GCCcore-13.3.0
 module load GDAL/3.10.0-foss-2024a

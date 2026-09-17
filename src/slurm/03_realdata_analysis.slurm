@@ -36,7 +36,6 @@ mkdir -p logs
 run_julia() {
   ( module purge
     module load bear-apps/2024a
-    module load bluebear
     module load Julia/1.12.2-linux-x86_64
     julia --project=. "$@" )
 }
@@ -44,7 +43,6 @@ run_julia() {
 run_r() {
   ( module purge
     module load bear-apps/2024a
-    module load bluebear
     module load R/4.5.0-gfbf-2024a
     Rscript "$@" )
 }
