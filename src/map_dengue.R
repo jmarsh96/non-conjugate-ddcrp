@@ -8,7 +8,7 @@
 # Spatial work in this project uses R + sf (not Julia, not geopandas), so the
 # maps live here rather than in the analyse script.
 #
-# Produces, in results/real_data/dengue_hop/figures/ (dengue_hop_test/ under
+# Produces, in results/real_data/dengue/figures/ (dengue_test/ under
 # --test), and copies to docs/paper/figures/ unless --test:
 #   dengue_maps.png             observed incidence | fitted cluster incidence,
 #                               on one shared colour scale, with the mode
@@ -45,7 +45,7 @@ repo <- if (length(script_path) == 1) {
 if (!dir.exists(file.path(repo, "src"))) repo <- normalizePath(".")
 
 outdir <- file.path(repo, "results", "real_data",
-                    if (is_test) "dengue_hop_test" else "dengue_hop")
+                    if (is_test) "dengue_test" else "dengue")
 figdir <- file.path(outdir, "figures")
 dir.create(figdir, recursive = TRUE, showWarnings = FALSE)
 

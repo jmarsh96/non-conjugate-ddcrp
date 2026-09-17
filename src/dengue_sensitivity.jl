@@ -1,82 +1,78 @@
 # ============================================================================
 # dengue_sensitivity.jl
 #
-# Prior-sensitivity study for the Brazil dengue application: how much of the
-# fitted clustering is a property of the DATA, and how much of the ddCRP prior
-# we chose to put over it?
+# Prior × proposal study for the Brazil dengue application. Three things vary,
+# with the likelihood, the priors on ρ and r and the seed held fixed:
 #
-# Two axes are varied, with the likelihood and the sampler held completely
-# fixed, so every difference between configurations is attributable to the
-# ddCRP prior alone:
+#   1. The ddCRP prior: the hop window at s = 1, 2, 3 hops, and the great-circle
+#      metric at s = 1, 5, 10 and with s inferred.
+#   2. Whether the ddCRP concentration α is inferred (Gamma(1, 0.01) prior) or
+#      fixed at α = 1.
+#   3. The RJMCMC proposal: a coordinate design over the birth family for ρ and
+#      r (the run_dengue.jl Part 1 design), crossed with fixed-dim
+#      ∈ {NoUpdate, Resample}.
 #
-#   1. The decay scale s, over seven orders of magnitude, from the flat limit
-#      (a distance-independent CRP) to the strongly-local limit.
-#   2. The distance metric itself. Municipalities are areal units, so the
-#      great-circle distance between centroids is only one reasonable choice.
-#      The graph analogues are included: the matrix exponential of the
-#      contiguity adjacency matrix, and hop-distance windows that allow links
-#      only within s steps.
+# 7 priors × 2 α settings × 16 proposals = 224 configurations. Axes 1 and 2
+# change the posterior; axis 3 does not, so within a prior × α cell the 16
+# proposals must agree up to Monte Carlo error and differ only in how well they
+# mix. The report picks the best-mixing proposal per cell and compares the
+# cells on predictive fit.
 #
 # FOR THE HOP METRIC, s IS THE WINDOW RADIUS IN HOPS, not a rate. The kernel is
-# uniform inside the window and effectively zero outside it, so the radius is
-# the only thing the prior has to say; a within-window decay rate would be
-# almost entirely absorbed by the inferred α_ddcrp. The package still needs a
-# rate for exp(-rate*d), so hop configurations pass rate 1 on a 0 / LOG_FLOOR
-# distance matrix (see build_D). Everywhere below `s` is the reported value and
-# `kernel_rate` is what reaches DDCRPParams; they coincide for every other
-# metric.
+# uniform inside the window and effectively zero outside it. The package still
+# needs a rate for exp(-rate*d), so hop configurations pass rate 1 on a
+# 0 / LOG_FLOOR distance matrix (`hop_window_D` in dengue_common.jl). `s` is the
+# reported value; `kernel_rate` is what reaches DDCRPParams.
 #
-# THE DECAY SCALE s IS A RATE, NOT A LENGTH. The package defines
+# FOR THE GREAT-CIRCLE METRIC, s IS A RATE: exp_decay(d; scale) = exp(-d*scale)
+# (priors.jl:55), so LARGER s is a MORE LOCAL prior, with decay length
+# D_SCALE / s on distances rescaled by the median pairwise distance.
 #
-#     exp_decay(d; scale) = exp(-d * scale)            (priors.jl:55)
-#
-# so the link weight is exp(-d*s): LARGER s means FASTER decay and a MORE
-# LOCAL prior. The decay length in kilometres is D_SCALE / s, not D_SCALE * s.
-# Every reading of this study depends on getting that direction right.
-#
-# WHY THE ALTERNATIVE METRICS ARE DISTANCE MATRICES, NOT CUSTOM KERNELS.
-# `DDCRPParams` accepts a `decay_fn`, but the hyperparameter samplers in
-# `inference/hyperparams.jl` hard-code exp(-s*d_ij) in `compute_R` and in the
-# α and s updates regardless of it. These runs infer α_ddcrp, so a custom
-# decay_fn would leave the α update inconsistent with the prior actually in
-# use. Every metric is therefore encoded as a distance matrix and the stock
-# `exp_decay` is kept throughout.
+# WHY METRICS ARE DISTANCE MATRICES, NOT CUSTOM KERNELS. `inference/
+# hyperparams.jl` hard-codes exp(-s*d_ij) in the α and s updates regardless of
+# `decay_fn`, so a custom kernel would leave the α update inconsistent with the
+# prior in force.
 #
 # Run `src/prepare_dengue_data.jl` and `src/prepare_dengue_adjacency.R` first.
 #
 # Usage:
-#   julia --project=. src/dengue_sensitivity.jl --pilot   # cost, before committing
-#   julia --project=. src/dengue_sensitivity.jl --test    # tiny/fast smoke run
-#   julia --project=. src/dengue_sensitivity.jl           # full grid, 8 workers
-#   julia --project=. src/dengue_sensitivity.jl --workers 12
-#   julia --project=. src/dengue_sensitivity.jl --slurm
-#   --iterations / --burn / --thin override the chain length below.
+#   julia --project=. src/dengue_sensitivity.jl --list          # grid size (writes nothing)
+#   julia --project=. src/dengue_sensitivity.jl --task 17       # one config (Slurm array task)
+#   julia --project=. src/dengue_sensitivity.jl --collect       # merge finished tasks into tables
+#   julia --project=. src/dengue_sensitivity.jl --pilot         # per-task cost, before the grid
+#   julia --project=. src/dengue_sensitivity.jl --test          # tiny grid, run locally, collected
+#   julia --project=. src/dengue_sensitivity.jl --workers 12    # whole grid locally, collected
 #
-# Then: Rscript -e 'rmarkdown::render("src/dengue_sensitivity_analysis.rmd")'
+#   --iterations / --burn / --thin override the chain length.
+#   --force reruns a --task whose result already exists.
+#
+# On Slurm: bash src/slurm/submit_dengue_sensitivity.sh
+# Then:     Rscript -e 'rmarkdown::render("src/dengue_sensitivity_analysis.rmd")'
 # ============================================================================
 
 using DistanceDependentCRP, CSV, DataFrames, Distances, Statistics, StatsBase,
       Random, JLD2, Printf, Distributions, LinearAlgebra
 using Distributed
 
-const USE_SLURM = "--slurm" in ARGS
-const IS_TEST   = "--test"  in ARGS
-const IS_PILOT  = "--pilot" in ARGS
+const IS_TEST    = "--test"    in ARGS
+const IS_PILOT   = "--pilot"   in ARGS
+const IS_LIST    = "--list"    in ARGS
+const IS_COLLECT = "--collect" in ARGS
+const FORCE      = "--force"   in ARGS
 
 function arg_value(flag, default)
     i = findfirst(==(flag), ARGS)
     isnothing(i) ? default : parse(Int, ARGS[i+1])
 end
 
-const UF   = arg_value("--uf", 41)      # 41 = Paraná (see prepare_dengue_data.jl)
-const YEAR = arg_value("--year", 2024)
+const UF      = arg_value("--uf", 41)      # 41 = Paraná (see prepare_dengue_data.jl)
+const YEAR    = arg_value("--year", 2024)
+const TASK_ID = arg_value("--task", 0)     # 1-based index into the grid
 
-if USE_SLURM
-    using SlurmClusterManager
-    addprocs(SlurmManager())
-else
-    addprocs(arg_value("--workers", 8))
-end
+# Workers only when this process runs several chains itself; an array task runs
+# one chain, and --list / --collect run none.
+const RUN_LOCAL = TASK_ID == 0 && !IS_LIST && !IS_COLLECT
+RUN_LOCAL && addprocs(arg_value("--workers", 8))
 
 @everywhere begin
     using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
@@ -87,19 +83,17 @@ end
 end
 
 # ============================================================================
-# Sampler settings, held fixed across every configuration
+# Sampler settings shared by every configuration
 #
-# These are the Part 2 winners from `run_dengue.jl` (read off
-# results/real_data/dengue/summary_sensitivity.csv, which records the σ pair the
-# tuning stage selected). Nothing about the sampler varies in this study; only
-# the ddCRP prior does.
+# Proposal scales are the run_dengue.jl tuning winners. Only the proposal
+# FAMILIES vary here; the scales are held fixed so a family is not favoured by
+# having been tuned for.
 # ============================================================================
 
 @everywhere const PROP_SDS = (ρ = 0.15, r = 0.30)   # within-cluster MH, log scale
 const SIGMA_BIRTH    = 0.50
 const SIGMA_RESAMPLE = 0.10
-const FAM_ρ = :lnmm
-const FAM_r = :lnmm
+const ALPHA_FIXED    = 1.0
 
 @everywhere _birth_family(fam::Symbol, σ) =
     fam === :prior ? PriorProposal() :
@@ -111,25 +105,20 @@ const FAM_r = :lnmm
 @everywhere make_birth(fρ, fr, σ) =
     MixedProposal((ρ = _birth_family(fρ, σ), r = _birth_family(fr, σ)))
 
-@everywhere make_fdim(fρ, fr, σr) =
-    MixedFixedDim((ρ = Resample(_birth_family(fρ, σr)),
-                   r = Resample(_birth_family(fr, σr))))
+@everywhere make_fdim(fρ, fr, σr, resample::Bool) =
+    resample ? MixedFixedDim((ρ = Resample(_birth_family(fρ, σr)),
+                              r = Resample(_birth_family(fr, σr)))) : NoUpdate()
 
 @everywhere thin_chain(s::NegBinPopulationRatesSamples, keep) =
     NegBinPopulationRatesSamples(s.c[keep, :], s.ρ[keep, :], s.r[keep, :],
                                  s.logpost[keep], s.α_ddcrp[keep], s.s_ddcrp[keep])
 
-# Point estimates (`dahl_point_estimate`, `mode_point_estimate`, `ari`) and the
-# posterior predictive statistics (`moran_I`, `ppc_statistics`) live in
-# dengue_common.jl, shared with run_dengue.jl and analyse_dengue.jl, so the
-# whole study still runs on the workers in one pass.
-
 # ============================================================================
 # Unit of work
 #
-# One configuration: run the chain, save it, and reduce it on the worker to the
-# handful of small tables the report needs. Reducing here rather than in a
-# second script means the 19 chains are opened once, not twice.
+# One configuration: run the chain, save it, and reduce it to the small tables
+# the report needs. Each array task writes its reduction to tasks/<id>.jld2, and
+# --collect stitches those together, so no chain is ever opened twice.
 # ============================================================================
 
 @everywhere function run_config(cfg)
@@ -140,15 +129,17 @@ const FAM_r = :lnmm
         n_samples = cfg.n_samples,
         verbose = false,
         track_diagnostics = true,
-        infer_params = Dict{Symbol,Bool}(:α_ddcrp => true, :s_ddcrp => cfg.infer_s),
+        infer_params = Dict{Symbol,Bool}(:α_ddcrp => cfg.infer_alpha, :s_ddcrp => cfg.infer_s),
         prop_sds = Dict{Symbol,Float64}(
             :ρ => PROP_SDS.ρ, :r => PROP_SDS.r, :s_ddcrp => 0.3),
     )
 
-    ddcrp  = DDCRPParams(1.0, cfg.kernel_rate, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
+    # α starts at 1 either way; with infer_alpha = false it stays there.
+    ddcrp  = DDCRPParams(cfg.alpha_init, cfg.kernel_rate, DistanceDependentCRP.exp_decay,
+                         1.0, 0.01, 1.0, 0.01)
     model  = NegBinPopulationRates()
     birth  = make_birth(cfg.fam_ρ, cfg.fam_r, cfg.σ_birth)
-    fdim   = make_fdim(cfg.fam_ρ, cfg.fam_r, cfg.σ_resample)
+    fdim   = make_fdim(cfg.fam_ρ, cfg.fam_r, cfg.σ_resample, cfg.resample)
 
     total_time = @elapsed begin
         samples, diag = mcmc(model, data, ddcrp, cfg.priors, birth;
@@ -157,10 +148,11 @@ const FAM_r = :lnmm
 
     keep = (cfg.burn + 1):cfg.thin:cfg.n_samples
     post = thin_chain(samples, keep)
+    samples = nothing; GC.gc()          # the full chain is ~3 GB at 300k iterations
     n_post = length(keep)
 
     chain_dir = joinpath(cfg.outdir, "chains"); mkpath(chain_dir)
-    jldsave(joinpath(chain_dir, cfg.chain_file);
+    jldsave(joinpath(chain_dir, cfg.config_id * ".jld2");
             samples = post, burn = 0, thin = 1,
             burn_applied = cfg.burn, thin_applied = cfg.thin,
             label = cfg.label, config_id = cfg.config_id)
@@ -169,25 +161,32 @@ const FAM_r = :lnmm
     k_trace = calculate_n_clusters(post.c)
     acc     = acceptance_rates(diag)
     ess_K   = effective_sample_size(Float64.(k_trace))
+    ess_lp  = effective_sample_size(post.logpost)
     esjd_K  = mean(diff(Float64.(k_trace)).^2)
     med_ess(M) = median([effective_sample_size(M[:, i]) for i in axes(M, 2)])
+    ess_s   = cfg.infer_s     ? effective_sample_size(post.s_ddcrp) : NaN
+    ess_α   = cfg.infer_alpha ? effective_sample_size(post.α_ddcrp) : NaN
 
     summary = (
-        config_id = cfg.config_id, label = cfg.label,
-        metric = cfg.metric, metric_family = cfg.metric_family,
-        hop_radius = cfg.hop_radius, s_decay = cfg.s, kernel_rate = cfg.kernel_rate,
-        infer_s = cfg.infer_s,
+        config_id = cfg.config_id, prior_id = cfg.prior_id, proposal_id = cfg.proposal_id,
+        label = cfg.label,
+        metric = cfg.metric, hop_radius = cfg.hop_radius, s_decay = cfg.s,
+        kernel_rate = cfg.kernel_rate, infer_s = cfg.infer_s, infer_alpha = cfg.infer_alpha,
+        fam_rho = String(cfg.fam_ρ), fam_r = String(cfg.fam_r),
+        fixed_dim = cfg.resample ? "Resample" : "NoUpdate",
         d_scale = cfg.d_scale,
         sigma_birth = cfg.σ_birth, sigma_resample = cfg.σ_resample,
-        n_obs = length(cfg.y), n_post = n_post,
+        n_obs = length(cfg.y), n_samples = cfg.n_samples, n_post = n_post,
         mean_K = mean(k_trace), mode_K = Int(mode(k_trace)),
         std_K = std(Float64.(k_trace)),
         min_K = minimum(k_trace), max_K = maximum(k_trace),
         acc_birth = acc.birth, acc_death = acc.death,
         acc_fixed = acc.fixed, acc_overall = acc.overall,
-        ess_K = ess_K, ess_logpost = effective_sample_size(post.logpost),
+        ess_K = ess_K, ess_logpost = ess_lp,
+        ess_s = ess_s, ess_alpha = ess_α,
         med_ess_rho = med_ess(post.ρ), med_ess_r = med_ess(post.r),
-        esjd_K = esjd_K, ess_per_sec = ess_K / total_time,
+        esjd_K = esjd_K,
+        min_ess = min(ess_K, ess_lp), min_ess_per_sec = min(ess_K, ess_lp) / total_time,
         total_time = total_time,
         mean_logpost = mean(post.logpost),
         s_post = mean(post.s_ddcrp), alpha_post = mean(post.α_ddcrp),
@@ -256,33 +255,35 @@ const FAM_r = :lnmm
                  yrep_q975 = [quantile(view(y_rep, :, i), 0.975) for i in 1:n],
                  pit = pit)
 
-    return (summary = summary, traces = traces, kpost = kpost, assign = assign,
-            scores = scores, pointwise = pointwise, ppc_stats = ppc_stats, ppc_reps = ppc_reps,
-            ppc_point = ppc_point, z_mode = z_mod)
+    result = (summary = summary, traces = traces, kpost = kpost, assign = assign,
+              scores = scores, pointwise = pointwise, ppc_stats = ppc_stats,
+              ppc_reps = ppc_reps, ppc_point = ppc_point, z_mode = z_mod)
+
+    task_dir = joinpath(cfg.outdir, "tasks"); mkpath(task_dir)
+    jldsave(joinpath(task_dir, cfg.config_id * ".jld2"); result = result)
+    return result
 end
 
 # ============================================================================
 # Constants
 # ============================================================================
 
-# Full length matches the 150k-iteration headline dengue chains, so the
-# sensitivity configurations are compared at the same Monte Carlo precision.
-const N_SAMPLES = arg_value("--iterations", IS_TEST ? 1_000 : 150_000)
-const BURN      = arg_value("--burn",       IS_TEST ?   200 :  50_000)
-const THIN      = arg_value("--thin",       IS_TEST ?     5 :      10)
+const N_SAMPLES = arg_value("--iterations", IS_TEST ? 1_000 : 300_000)
+const BURN      = arg_value("--burn",       IS_TEST ?   200 : 100_000)
+const THIN      = arg_value("--thin",       IS_TEST ?     5 :      20)
 BURN < N_SAMPLES || error("--burn ($BURN) must be below --iterations ($N_SAMPLES)")
 
-const N_TRACE   = 2_000      # trace rows exported per config
+const N_TRACE   = 1_000      # trace rows exported per config
 const N_REP     = IS_TEST ? 200 : 1_000   # posterior predictive replicates
-const N_REP_OUT = IS_TEST ? 100 :   500   # replicate statistics exported
+const N_REP_OUT = IS_TEST ? 100 :   200   # replicate statistics exported
 
-const N_PILOT   = 4_000
+const N_PILOT    = 4_000
 const PILOT_BURN = 500
 
-const OUTDIR = IS_TEST ?
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue_sensitivity_test") :
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue_sensitivity")
-mkpath(OUTDIR)
+# A new directory rather than dengue_sensitivity/, which holds the earlier
+# 19-prior study and must not be overwritten by this one's tables.
+const OUTDIR = joinpath(@__DIR__, "..", "results", "real_data",
+                        IS_TEST ? "dengue_sensitivity_proposals_test" : "dengue_sensitivity_proposals")
 
 # ============================================================================
 # Load data — identical to run_dengue.jl, so the likelihood side is unchanged
@@ -307,15 +308,6 @@ const ρ_A   = 1.5
 const PRIORS = NegBinPopulationRatesPriors(ρ_a = ρ_A, ρ_b = ρ_A / ρ_BAR,
                                            r_a = 2.0, r_b = 0.5)
 
-@printf("Loaded %s: %d municipalities, %d total cases, %.2f M people\n",
-        basename(DATA_FILE), N, sum(Y_ALL), sum(DF.pop) / 1e6)
-@printf("  median pairwise centroid distance %.0f km (every D is rescaled by its own median)\n",
-        D_SCALE)
-
-# ============================================================================
-# The contiguity graph
-# ============================================================================
-
 const ADJ_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(UF)_adjacency.csv")
 isfile(ADJ_FILE) || error("""
     Missing $ADJ_FILE
@@ -323,213 +315,207 @@ isfile(ADJ_FILE) || error("""
 
 const A_ADJ = load_adjacency(ADJ_FILE, Int.(DF.geocode))
 const NBRS  = neighbour_lists(A_ADJ)
-
 const H_HOP = hop_distances(NBRS)
 any(isinf, H_HOP) && error("contiguity graph is disconnected; rebuild the edge list")
 
-# Communicability G = exp(A). The spectral radius of a planar contiguity graph
-# is small (about 6 here), so the entries stay well inside Float64 range; the
-# far tail underflows towards zero and is floored below.
-const G_COMM = exp(Matrix(A_ADJ))
-
-@printf("  contiguity graph: %d edges, mean degree %.2f, diameter %d hops\n",
-        Int(sum(A_ADJ) / 2), sum(A_ADJ) / N, Int(maximum(H_HOP)))
-
-# ============================================================================
-# Distance metrics
-#
-# Every metric is rescaled by its own median off-diagonal entry (the great-
-# circle distances by the median pairwise distance), so a given s means the
-# same "decay per median separation" under all of them.
-#
-# The hop windows use a soft floor rather than a hard zero; see `hop_window_D`
-# and LOG_FLOOR in dengue_common.jl.
-# ============================================================================
-
-rescale(D) = (m = median(D[i, j] for i in 1:N for j in 1:N if i != j); (D ./ m, m))
-
-const D_GEODESIC = rescale(D_KM)
-
-# Communicability distance ξ_ij = sqrt(G_ii + G_jj - 2 G_ij) (Estrada & Hatano).
-# A genuine metric, so it drops straight into the exp(-s*d) kernel.
-const D_COMMDIST = rescale([sqrt(max(G_COMM[i,i] + G_COMM[j,j] - 2G_COMM[i,j], 0.0))
-                            for i in 1:N, j in 1:N])
-
-# Log-communicability: the most direct reading of "use exp(A) as the kernel",
-# since exp(-s*d) then makes the link weight proportional to G_ij^s. G is
-# floored at eps()*max(G) so the far tail cannot produce Inf.
-const D_LOGCOMM = let
-    off = [G_COMM[i,j] for i in 1:N for j in 1:N if i != j]
-    gmax = maximum(off); floor_g = eps() * gmax
-    rescale([i == j ? 0.0 : -log(max(G_COMM[i,j], floor_g) / gmax) for i in 1:N, j in 1:N])
-end
-
-# Hop distance rescaled by its median; descriptive only (metric_pairs.csv), since
-# the hop windows use raw hop counts.
-const D_HOP = rescale(H_HOP)
-
-# The rate passed to DDCRPParams. The hop windows encode everything in D, so
-# they run at a fixed rate of 1; every other metric uses s itself.
-kernel_rate(metric, s) = metric == "hop" ? 1.0 : s
-
-"""
-    build_D(metric, s) -> (D, d_scale, hop_radius)
-
-The distance matrix for one configuration. For `hop`, `s` is the integer
-window radius: pairs within `s` hops get distance 0 and the rest LOG_FLOOR, so
-under kernel rate 1 the in-window weights are uniform. The other metrics ignore
-`s` here, since it enters as the kernel rate instead.
-"""
-function build_D(metric::String, s::Float64)
-    metric == "geodesic"  && return (D_GEODESIC[1], D_GEODESIC[2], 0)
-    metric == "comm_dist" && return (D_COMMDIST[1], D_COMMDIST[2], 0)
-    metric == "log_comm"  && return (D_LOGCOMM[1],  D_LOGCOMM[2],  0)
-    metric == "hop" || error("unknown metric $metric")
-    (isinteger(s) && s >= 1) || error("hop window radius must be a positive integer, got $s")
-    r = Int(s)
-    return (hop_window_D(H_HOP, r), 1.0, r)
-end
-
-const METRIC_DESC = Dict(
-    "geodesic"  => "great-circle distance between municipality centroids",
-    "comm_dist" => "communicability distance sqrt(G_ii + G_jj - 2 G_ij), G = exp(A)",
-    "log_comm"  => "-log(G_ij / max G), G = exp(A); link weight proportional to G_ij^s",
-    "hop"       => "uniform link weight within s graph hops, suppressed beyond",
-)
+const D_GEODESIC = D_KM ./ D_SCALE
 
 # ============================================================================
 # The configuration grid
-#
-# Axis 1: the requested seven-point s grid under the great-circle metric,
-#         spanning the flat limit (s = 1e-4, where exp(-d*s) is 1 to within
-#         1e-4 for every pair and the ddCRP degenerates into a
-#         distance-independent CRP) through to the strongly local limit
-#         (s = 10, a decay length of about 23 km).
-# Axis 2: each communicability metric at three points drawn from that same
-#         grid, so the two axes stay comparable.
-# Axis 3: the hop window at radius s = 1..5 hops.
-# Plus one inferred-s chain under the great-circle metric, as the reference
-# for the degeneracy run_dengue.jl documents.
 # ============================================================================
 
-const S_GRID     = IS_TEST ? [0.01, 0.5] : [0.0001, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0]
-const S_GRID_ALT = IS_TEST ? [0.5]       : [0.1, 0.5, 5.0]
-const ALT_METRICS = IS_TEST ? ["comm_dist"] : ["comm_dist", "log_comm"]
-const HOP_GRID    = IS_TEST ? [1.0, 3.0] : [1.0, 2.0, 3.0, 4.0, 5.0]
+# (metric, s, infer_s). For hop, s is the window radius; for geodesic, a rate.
+# The inferred-s chain starts at s = 1.
+const PRIOR_GRID = IS_TEST ?
+    [("hop", 1.0, false), ("geodesic", 5.0, false)] :
+    [("hop", 1.0, false), ("hop", 2.0, false), ("hop", 3.0, false),
+     ("geodesic", 1.0, false), ("geodesic", 5.0, false), ("geodesic", 10.0, false),
+     ("geodesic", 1.0, true)]
 
-fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
+const ALPHA_GRID = [true, false]            # infer α, or fix it at ALPHA_FIXED
+
+# Coordinate design over (ρ family, r family): the lnmm/lnmm baseline, one
+# parameter swapped to each alternative, and an all-prior reference. Each is
+# crossed with fixed-dim ∈ {NoUpdate, Resample}.
+const FAMILY_GRID = IS_TEST ?
+    [(:lnmm, :lnmm), (:prior, :prior)] :
+    [(:lnmm, :lnmm),
+     (:prior, :lnmm), (:nmm, :lnmm), (:ig, :lnmm),
+     (:lnmm, :prior), (:lnmm, :nmm), (:lnmm, :ig),
+     (:prior, :prior)]
+const RESAMPLE_GRID = [false, true]
+
 fmt_s(s) = replace(@sprintf("%g", s), "." => "p", "-" => "m")
 
-function make_cfg(metric, s; infer_s = false, n_samples = N_SAMPLES, burn = BURN,
-                  config_id = nothing)
-    D, d_scale, r = build_D(metric, s)
-    lbl = infer_s ? "$(metric) s inferred" : "$(metric) s=$(@sprintf("%g", s))"
-    cid = something(config_id,
-                    infer_s ? "$(metric)__infer_s" : "$(metric)__s$(fmt_s(s))")
+prior_id(metric, s, infer_s, infer_alpha) =
+    (metric == "hop" ? "hop" : "geo") * "_s" * (infer_s ? "inf" : fmt_s(s)) *
+    "__a" * (infer_alpha ? "inf" : "fix")
+
+proposal_id(fρ, fr, resample) = "$(fρ)_$(fr)_" * (resample ? "rs" : "nu")
+
+prior_label(metric, s, infer_s, infer_alpha) =
+    (metric == "hop" ? "hop s=$(Int(s))" : infer_s ? "geodesic s inferred" :
+                                               "geodesic s=$(@sprintf("%g", s))") *
+    (infer_alpha ? ", α inferred" : ", α=$(@sprintf("%g", ALPHA_FIXED))")
+
+proposal_label(fρ, fr, resample) = "ρ:$(fρ) r:$(fr) + " * (resample ? "Resample" : "NoUpdate")
+
+# Grid specs are cheap NamedTuples; the 399×399 distance matrix is attached only
+# when a config is about to run (`materialise`).
+const GRID = [(metric = m, s = s, infer_s = is, infer_alpha = ia,
+               fam_ρ = fρ, fam_r = fr, resample = rs)
+              for (m, s, is) in PRIOR_GRID for ia in ALPHA_GRID
+              for (fρ, fr) in FAMILY_GRID for rs in RESAMPLE_GRID]
+
+config_id(g) = prior_id(g.metric, g.s, g.infer_s, g.infer_alpha) * "__" *
+               proposal_id(g.fam_ρ, g.fam_r, g.resample)
+
+function build_D(metric::String, s::Float64, infer_s::Bool)
+    metric == "geodesic" && return (D_GEODESIC, D_SCALE, 0, s)
+    metric == "hop" || error("unknown metric $metric")
+    infer_s && error("s cannot be inferred for the hop window")
+    r = Int(s)
+    return (hop_window_D(H_HOP, r), 1.0, r, 1.0)
+end
+
+const METRIC_DESC = Dict(
+    "geodesic" => "great-circle distance between centroids, exp(-s d / median distance)",
+    "hop"      => "uniform link weight within s graph hops, suppressed beyond",
+)
+
+function materialise(g; n_samples = N_SAMPLES, burn = BURN, thin = THIN, cid = config_id(g),
+                     outdir = OUTDIR)
+    D, d_scale, r, rate = build_D(g.metric, g.s, g.infer_s)
     (
-        config_id = cid, label = lbl,
-        metric = metric,
-        metric_family = metric,
-        hop_radius = r, d_scale = d_scale,
-        s = s, kernel_rate = kernel_rate(metric, s), infer_s = infer_s,
-        fam_ρ = FAM_ρ, fam_r = FAM_r,
+        config_id = cid,
+        prior_id = prior_id(g.metric, g.s, g.infer_s, g.infer_alpha),
+        proposal_id = proposal_id(g.fam_ρ, g.fam_r, g.resample),
+        label = prior_label(g.metric, g.s, g.infer_s, g.infer_alpha) * " | " *
+                proposal_label(g.fam_ρ, g.fam_r, g.resample),
+        metric = g.metric, hop_radius = r, d_scale = d_scale,
+        s = g.s, kernel_rate = rate, infer_s = g.infer_s,
+        infer_alpha = g.infer_alpha, alpha_init = ALPHA_FIXED,
+        fam_ρ = g.fam_ρ, fam_r = g.fam_r, resample = g.resample,
         σ_birth = SIGMA_BIRTH, σ_resample = SIGMA_RESAMPLE,
         y = Y_ALL, E = E_ALL, D = D, nbrs = NBRS, priors = PRIORS,
-        n_samples = n_samples, burn = burn, thin = THIN,
+        n_samples = n_samples, burn = burn, thin = thin,
         n_trace = N_TRACE, n_rep = N_REP, n_rep_out = N_REP_OUT,
-        outdir = OUTDIR, chain_file = fmtlabel(cid) * ".jld2",
-        seed = 42,
+        outdir = outdir, seed = 42,
     )
 end
 
+function write_config_index()
+    CSV.write(joinpath(OUTDIR, "config_index.csv"), DataFrame([
+        (task = k, config_id = config_id(g),
+         prior_id = prior_id(g.metric, g.s, g.infer_s, g.infer_alpha),
+         proposal_id = proposal_id(g.fam_ρ, g.fam_r, g.resample),
+         prior_label = prior_label(g.metric, g.s, g.infer_s, g.infer_alpha),
+         proposal_label = proposal_label(g.fam_ρ, g.fam_r, g.resample),
+         metric = g.metric, metric_description = METRIC_DESC[g.metric],
+         s = g.s, infer_s = g.infer_s, infer_alpha = g.infer_alpha,
+         alpha_fixed = g.infer_alpha ? NaN : ALPHA_FIXED,
+         fam_rho = String(g.fam_ρ), fam_r = String(g.fam_r),
+         fixed_dim = g.resample ? "Resample" : "NoUpdate",
+         n_samples = N_SAMPLES, burn = BURN, thin = THIN)
+        for (k, g) in enumerate(GRID)]))
+end
+
 # ============================================================================
-# Part 0 — --pilot: what does the full grid cost?
-#
-# One short chain per metric family, since cost depends on the metric only
-# through how many clusters the prior encourages. Run this before committing to
-# the full grid.
+# --list: the grid size, for the Slurm array range
 # ============================================================================
 
-if IS_PILOT
-    pilot = [("geodesic", 0.5), ("hop", 1.0), ("hop", 5.0),
-             ("comm_dist", 0.5), ("log_comm", 0.5)]
-    cfgs = [make_cfg(m, s; n_samples = N_PILOT, burn = PILOT_BURN,
-                     config_id = "pilot_$(m)_s$(fmt_s(s))") for (m, s) in pilot]
-    println("\n" * "="^80)
-    println("PILOT — $(length(cfgs)) configs × $N_PILOT iterations")
-    println("="^80)
-
-    res = collect(pmap(run_config, cfgs))
-    rows = DataFrame([r.summary for r in res])
-    CSV.write(joinpath(OUTDIR, "summary_pilot.csv"), rows)
-
-    n_full = length(S_GRID) + length(ALT_METRICS) * length(S_GRID_ALT) + length(HOP_GRID) + 1
-    n_work = nworkers()
-    println()
-    @printf("%-14s %9s %9s %9s %9s\n", "metric", "mean K", "time(s)", "s/1k it", "ESS(K)")
-    println("-"^60)
-    for r in eachrow(rows)
-        @printf("%-14s %9.2f %9.1f %9.2f %9.0f\n",
-                "$(r.metric) s=$(@sprintf("%g", r.s_decay))", r.mean_K, r.total_time, r.total_time / (N_PILOT / 1000), r.ess_K)
+if IS_LIST
+    for (k, g) in enumerate(GRID)
+        @printf("%4d  %s\n", k, config_id(g))
     end
-    per1k = mean(rows.total_time) / (N_PILOT / 1000)
-    # Cost grows with K, and the pilot runs far too short to reach the
-    # stationary K, so treat this as a floor rather than a forecast.
-    est = per1k * (N_SAMPLES / 1000) * n_full / n_work
-    println()
-    @printf("Full grid: %d configs × %d iterations on %d workers\n", n_full, N_SAMPLES, n_work)
-    @printf("Projected wall time: at least %.1f h (%.1f s per 1k iterations, per chain)\n",
-            est / 3600, per1k)
-    println("Cost rises with K, and these pilot chains are too short to reach the")
-    println("stationary K, so read that as a lower bound.")
-    println("\n  → $(joinpath(OUTDIR, "summary_pilot.csv"))")
+    println("N_CONFIGS=$(length(GRID))")
     exit(0)
 end
 
 # ============================================================================
-# The full grid
+# --task N: one configuration, as one Slurm array task
 # ============================================================================
 
-configs = Any[make_cfg("geodesic", s) for s in S_GRID]
-for m in ALT_METRICS, s in S_GRID_ALT
-    push!(configs, make_cfg(m, s))
+if TASK_ID > 0
+    1 <= TASK_ID <= length(GRID) ||
+        error("--task $TASK_ID is outside the grid (1..$(length(GRID)))")
+    g = GRID[TASK_ID]
+    cid = config_id(g)
+    done = joinpath(OUTDIR, "tasks", cid * ".jld2")
+    if isfile(done) && !FORCE
+        println("Task $TASK_ID ($cid) already has a result at $done; pass --force to rerun.")
+        exit(0)
+    end
+    cfg = materialise(g)
+    @printf("Task %d/%d: %s\n  %s\n  %d iterations (burn %d, thin %d)\n",
+            TASK_ID, length(GRID), cid, cfg.label, N_SAMPLES, BURN, THIN)
+    flush(stdout)
+    r = run_config(cfg)
+    sm = r.summary
+    @printf("Done in %.0f s: mean K %.2f, ESS(K) %.0f, ESS(logpost) %.0f, elpd_loo %.1f\n",
+            sm.total_time, sm.mean_K, sm.ess_K, sm.ess_logpost, r.scores.elpd_loo)
+    exit(0)
 end
-append!(configs, [make_cfg("hop", s) for s in HOP_GRID])
-push!(configs, make_cfg("geodesic", 0.5; infer_s = true))
 
-println("\n" * "="^80)
-@printf("DENGUE PRIOR SENSITIVITY — %d configs × %d iterations on %d workers\n",
-        length(configs), N_SAMPLES, nworkers())
-println("="^80)
-for c in configs
-    @printf("  %-26s %-11s s=%-8g %s\n",
-            c.config_id, c.metric, c.s,
-            c.metric == "geodesic" ? @sprintf("decay length %.0f km", c.d_scale / c.s) :
-            c.metric == "hop" ? @sprintf("uniform window of %d hop%s", c.hop_radius, c.hop_radius == 1 ? "" : "s") :
-            @sprintf("decay length %.2f metric units", 1 / c.s))
+# ============================================================================
+# --pilot: per-task cost at the corners of the grid
+# ============================================================================
+
+if IS_PILOT
+    pilot = [(metric = "hop", s = 1.0, infer_s = false, infer_alpha = true,
+              fam_ρ = :lnmm, fam_r = :lnmm, resample = rs) for rs in RESAMPLE_GRID]
+    append!(pilot, [(metric = "geodesic", s = 1.0, infer_s = true, infer_alpha = true,
+                     fam_ρ = :prior, fam_r = :prior, resample = rs) for rs in RESAMPLE_GRID])
+    # Written under pilot/, so pilot chains never pass for grid results.
+    cfgs = [materialise(g; n_samples = N_PILOT, burn = PILOT_BURN, thin = 1,
+                        cid = "pilot_" * config_id(g), outdir = joinpath(OUTDIR, "pilot"))
+            for g in pilot]
+    println("\nPILOT — $(length(cfgs)) configs × $N_PILOT iterations")
+    res = collect(pmap(run_config, cfgs))
+    rows = DataFrame([r.summary for r in res])
+    CSV.write(joinpath(OUTDIR, "summary_pilot.csv"), rows)
+    @printf("\n%-44s %9s %10s\n", "config", "mean K", "s/1k it")
+    for r in eachrow(rows)
+        @printf("%-44s %9.2f %10.2f\n", r.config_id, r.mean_K, r.total_time / (N_PILOT / 1000))
+    end
+    worst = maximum(rows.total_time) / (N_PILOT / 1000)
+    @printf("\nSlowest: %.1f s per 1k iterations, so about %.1f h per task at %d iterations.\n",
+            worst, worst * N_SAMPLES / 1000 / 3600, N_SAMPLES)
+    println("Cost rises with K and these chains are too short to reach it, so set the")
+    println("array job's --time well above that.")
+    exit(0)
 end
 
-results = collect(pmap(run_config, configs))
+# ============================================================================
+# Local run: every config via pmap (the --test grid, or the full grid on a big
+# machine). Results land in tasks/ exactly as array tasks write them.
+# ============================================================================
+
+if RUN_LOCAL
+    todo = [g for g in GRID
+            if FORCE || !isfile(joinpath(OUTDIR, "tasks", config_id(g) * ".jld2"))]
+    @printf("\nDENGUE PRIOR × PROPOSAL STUDY — %d configs (%d to run) × %d iterations on %d workers\n",
+            length(GRID), length(todo), N_SAMPLES, nworkers())
+    pmap(run_config, (materialise(g) for g in todo))
+end
 
 # ============================================================================
-# Assemble the flat tables the R Markdown report reads
+# Collect: assemble the flat tables the R Markdown report reads
 # ============================================================================
 
-println("\nWriting tables...")
-ids = [c.config_id for c in configs]
+println("\nCollecting task results from $(joinpath(OUTDIR, "tasks"))...")
+isdir(joinpath(OUTDIR, "tasks")) || error("no task results under $(joinpath(OUTDIR, "tasks"))")
+write_config_index()
 
-CSV.write(joinpath(OUTDIR, "config_index.csv"),
-    DataFrame(config_id = ids, label = [c.label for c in configs],
-              metric = [c.metric for c in configs],
-              metric_family = [c.metric_family for c in configs],
-              metric_description = [METRIC_DESC[c.metric] for c in configs],
-              hop_radius = [c.hop_radius for c in configs],
-              s = [c.s for c in configs], kernel_rate = [c.kernel_rate for c in configs],
-              infer_s = [c.infer_s for c in configs],
-              d_scale = [c.d_scale for c in configs],
-              n_samples = [c.n_samples for c in configs],
-              burn = [c.burn for c in configs], thin = [c.thin for c in configs],
-              chain_file = [c.chain_file for c in configs]))
+ids_all = [config_id(g) for g in GRID]
+present = [isfile(joinpath(OUTDIR, "tasks", id * ".jld2")) for id in ids_all]
+missing_ids = ids_all[.!present]
+if !isempty(missing_ids)
+    @warn "$(length(missing_ids)) of $(length(ids_all)) configs have no result yet; tables cover the rest" missing_ids
+end
+ids = ids_all[present]
+isempty(ids) && error("no task results found under $(joinpath(OUTDIR, "tasks"))")
+results = [load(joinpath(OUTDIR, "tasks", id * ".jld2"), "result") for id in ids]
 
 summary_df = DataFrame([r.summary for r in results])
 CSV.write(joinpath(OUTDIR, "summary_sensitivity.csv"), summary_df)
@@ -554,24 +540,13 @@ CSV.write(joinpath(OUTDIR, "model_comparison.csv"),
                     (c => [getfield(r.scores, c) for r in results]
                      for c in (:waic, :lppd, :p_waic, :lpml, :elpd_loo, :n_bad_k))...))
 
-# Pointwise elpd, and every pairwise difference with its standard error.
+# Pointwise elpd: the report computes every difference and its standard error
+# from this, for whichever subset of configs it compares.
 CSV.write(joinpath(OUTDIR, "pointwise_scores.csv"),
     vcat([DataFrame(config_id = ids[k], geocode = Int.(DF.geocode),
                     elpd_waic_i = r.pointwise.elpd_waic_i, elpd_loo_i = r.pointwise.elpd_loo_i,
                     lcpo_i = r.pointwise.lcpo_i, k_hat = r.pointwise.k_hat)
           for (k, r) in enumerate(results)]...))
-
-let rows = NamedTuple[]
-    for a in eachindex(results), b in eachindex(results)
-        a == b && continue
-        for (crit, f) in (("elpd_loo", :elpd_loo_i), ("elpd_waic", :elpd_waic_i), ("lpml", :lcpo_i))
-            d = elpd_difference(getfield(results[a].pointwise, f), getfield(results[b].pointwise, f))
-            push!(rows, (config_a = ids[a], config_b = ids[b], criterion = crit,
-                         diff = d.diff, se = d.se, z = d.diff / d.se))
-        end
-    end
-    CSV.write(joinpath(OUTDIR, "elpd_differences.csv"), DataFrame(rows))
-end
 
 CSV.write(joinpath(OUTDIR, "cluster_assignments_sensitivity.csv"),
     vcat([DataFrame(config_id = ids[k], geocode = Int.(DF.geocode), name = String.(DF.name),
@@ -590,36 +565,33 @@ CSV.write(joinpath(OUTDIR, "ppc_pointwise.csv"),
                     yrep_q975 = r.ppc_point.yrep_q975, pit = r.ppc_point.pit)
           for (k, r) in enumerate(results)]...))
 
-# Cross-configuration agreement on the mode partitions: the question of whether
-# the clustering is a property of the data or of the prior.
+# Agreement between mode partitions, for every pair of configs: within a prior
+# it measures Monte Carlo agreement between proposals, across priors how much
+# of the partition the prior decides.
 CSV.write(joinpath(OUTDIR, "cross_config_ari.csv"),
     DataFrame(config_a = repeat(ids, inner = length(ids)),
               config_b = repeat(ids, outer = length(ids)),
               ari = vec([ari(results[i].z_mode, results[j].z_mode)
                          for j in eachindex(results), i in eachindex(results)])))
 
-# ============================================================================
-# Metric descriptions, for the report's section on what each prior does
-# ============================================================================
-
-let
-    rows = NamedTuple[]
-    for (m, s) in vcat(("geodesic", 0.5), [(a, 0.5) for a in ALT_METRICS],
-                       [("hop", h) for h in HOP_GRID])
-        D, scale, r = build_D(m, s)
-        off = [D[i, j] for i in 1:N for j in 1:N if i != j]
-        inwin = r > 0 ? mean(H_HOP[i, j] <= r for i in 1:N for j in 1:N if i != j) : 1.0
+# What each prior allows, for the report's metric section.
+let rows = NamedTuple[]
+    for (m, s, is) in PRIOR_GRID
+        is && continue
+        D, scale, r, rate = build_D(m, s, is)
+        W = exp.(-rate .* D)
+        off_w = [W[i, j] for i in 1:N for j in 1:N if i != j]
+        inwin = r > 0 ? mean(H_HOP[i, j] <= r for i in 1:N for j in 1:N if i != j) : NaN
         push!(rows, (metric = m, s = s, description = METRIC_DESC[m], hop_radius = r,
-                     d_scale = scale, min_off = minimum(off), median_off = median(off),
-                     max_off = maximum(off), frac_in_window = inwin,
+                     d_scale = scale, mean_link_weight = mean(off_w),
+                     mean_row_weight = mean(sum(W, dims = 2) .- 1.0),
+                     frac_in_window = inwin,
                      mean_degree = sum(A_ADJ) / N, n_edges = Int(sum(A_ADJ) / 2),
                      graph_diameter = Int(maximum(H_HOP))))
     end
     CSV.write(joinpath(OUTDIR, "metric_summary.csv"), DataFrame(rows))
 end
 
-# A sample of pairs, so the report can show how the metrics relate to one
-# another without shipping four 399 x 399 matrices.
 let
     Random.seed!(7)
     pairs = [(i, j) for i in 1:N for j in (i+1):N]
@@ -627,11 +599,8 @@ let
     CSV.write(joinpath(OUTDIR, "metric_pairs.csv"),
         DataFrame(i = first.(sel), j = last.(sel),
                   geodesic_km = [D_KM[p...] for p in sel],
-                  geodesic    = [D_GEODESIC[1][p...] for p in sel],
-                  hop         = [H_HOP[p...] for p in sel],
-                  hop_scaled  = [D_HOP[1][p...] for p in sel],
-                  comm_dist   = [D_COMMDIST[1][p...] for p in sel],
-                  log_comm    = [D_LOGCOMM[1][p...] for p in sel]))
+                  geodesic    = [D_GEODESIC[p...] for p in sel],
+                  hop         = [H_HOP[p...] for p in sel]))
 end
 
 jldsave(joinpath(OUTDIR, "run_metadata_sensitivity.jld2");
@@ -639,43 +608,46 @@ jldsave(joinpath(OUTDIR, "run_metadata_sensitivity.jld2");
         lat = Float64.(DF.lat), lon = Float64.(DF.lon),
         geocode = Int.(DF.geocode), name = String.(DF.name),
         d_scale_km = D_SCALE, adjacency = A_ADJ, hop = H_HOP,
-        log_floor = LOG_FLOOR, config_ids = ids,
-        chain_files = [c.chain_file for c in configs])
+        log_floor = LOG_FLOOR, alpha_fixed = ALPHA_FIXED, config_ids = ids)
 
 # ============================================================================
-# Console summary
+# Console summary: the best-mixing proposal per prior × α cell, then those
+# cells ranked by elpd_loo with standard errors against the best
 # ============================================================================
 
-println("\n" * "="^112)
-println("PRIOR SENSITIVITY — $(length(configs)) configurations")
-println("="^112)
-@printf("%-26s %8s %8s %8s %9s %9s %8s %8s %9s\n",
-        "config", "mean K", "mode K", "sd K", "α post", "s post",
-        "acc.D%", "ESS(K)", "WAIC")
-println("-"^112)
-for (k, r) in enumerate(results)
-    sm = r.summary
-    @printf("%-26s %8.2f %8d %8.2f %9.3f %9.4f %8.2f %8.0f %9.1f\n",
-            sm.config_id, sm.mean_K, sm.mode_K, sm.std_K, sm.alpha_post, sm.s_post,
-            sm.acc_death * 100, sm.ess_K, results[k].scores.waic)
+best_rows = combine(groupby(summary_df, :prior_id)) do sdf
+    sdf[argmax(sdf.min_ess), :]
 end
+best_ids = String.(best_rows.config_id)
+res_of = Dict(zip(ids, results))
+loo = [res_of[id].scores.elpd_loo for id in best_ids]
+order = sortperm(loo; rev = true)
+top = best_ids[order[1]]
 
-let loo = [r.scores.elpd_loo for r in results]
-    best = argmax(loo)
-    println("\nelpd_loo shortfall against the best ($(ids[best])); under ~2 se is no real preference:")
-    for k in sortperm(loo; rev = true)
-        k == best && continue
-        d = elpd_difference(results[best].pointwise.elpd_loo_i, results[k].pointwise.elpd_loo_i)
-        @printf("  %-26s shortfall %8.1f  se %6.1f  (%.1f se)\n", ids[k], d.diff, d.se, d.diff / d.se)
+println("\n" * "="^118)
+println("BEST-MIXING PROPOSAL PER PRIOR × α (by min(ESS(K), ESS(logpost))), ranked by elpd_loo")
+println("="^118)
+@printf("%-18s %-26s %7s %7s %8s %6s %9s %8s %6s %6s\n",
+        "prior", "proposal", "mean K", "ESS(K)", "ESS(lp)", "acc.D%", "elpd_loo", "shortfall", "se", "in se")
+println("-"^118)
+for k in order
+    id = best_ids[k]; r = res_of[id]; sm = r.summary
+    if id == top
+        @printf("%-18s %-26s %7.1f %7.0f %8.0f %6.2f %9.1f %8s %6s %6s\n",
+                sm.prior_id, sm.proposal_id, sm.mean_K, sm.ess_K, sm.ess_logpost,
+                100 * sm.acc_death, r.scores.elpd_loo, "best", "", "")
+    else
+        d = elpd_difference(res_of[top].pointwise.elpd_loo_i, r.pointwise.elpd_loo_i)
+        @printf("%-18s %-26s %7.1f %7.0f %8.0f %6.2f %9.1f %8.1f %6.1f %6.1f\n",
+                sm.prior_id, sm.proposal_id, sm.mean_K, sm.ess_K, sm.ess_logpost,
+                100 * sm.acc_death, r.scores.elpd_loo, d.diff, d.se, d.diff / d.se)
     end
 end
 
 println("\nReading this table:")
-println("  s is a RATE: weight = exp(-d*s), so larger s is a MORE LOCAL prior.")
-println("  Except for hop, where s is the window radius: larger s is a LESS local prior.")
-println("  At s = 1e-4 the kernel is flat and the ddCRP is a plain CRP; if K there")
-println("  differs sharply from K at s = 0.5, the spatial prior is doing real work.")
-println("  High cross-config ARI means the clustering is driven by the data, not the prior.")
+println("  geodesic s is a RATE (larger = more local); hop s is a window RADIUS (larger = less local).")
+println("  Proposals do not change the posterior, so within a prior × α cell they should agree.")
+println("  A shortfall under ~2 se is no real preference between priors.")
 
 println("\nAll tables in $OUTDIR")
 println("Report: Rscript -e 'rmarkdown::render(\"src/dengue_sensitivity_analysis.rmd\"" *
