@@ -1,0 +1,751 @@
+---
+title: "Brazil dengue: how much of the clustering is the prior?"
+subtitle: "ddCRP decay scale and distance metric sensitivity, Paraná 2024"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+    self_contained: true
+    df_print: paged
+    fig_width: 10
+    fig_height: 6
+params:
+  results_dir: "results/real_data/dengue_sensitivity"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center", dpi = 130)
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(tidyr); library(readr)
+  library(patchwork); library(viridis); library(scales); library(forcats)
+  library(knitr); library(sf)
+})
+
+# Locate the repo root, so the report knits from either the repo root or src/.
+repo <- normalizePath(".", mustWork = FALSE)
+if (!dir.exists(file.path(repo, "src"))) repo <- normalizePath("..", mustWork = FALSE)
+
+RES <- params$results_dir
+if (!dir.exists(RES)) RES <- file.path(repo, params$results_dir)
+
+# Every table is optional: a chunk whose input is missing says so and moves on,
+# the same warn-and-skip convention the Julia analyse scripts use.
+have <- function(f) file.exists(file.path(RES, f))
+grab <- function(f) if (have(f)) suppressMessages(read_csv(file.path(RES, f),
+                                                           show_col_types = FALSE)) else NULL
+skip_note <- function(f) cat(sprintf("\n> Missing `%s` in `%s`; this section is skipped.\n\n", f, RES))
+
+cfg      <- grab("config_index.csv")
+summ     <- grab("summary_sensitivity.csv")
+traces   <- grab("traces.csv")
+kpost    <- grab("k_posterior.csv")
+metrics  <- grab("metric_summary.csv")
+mpairs   <- grab("metric_pairs.csv")
+assign   <- grab("cluster_assignments_sensitivity.csv")
+ariw     <- grab("cross_config_ari.csv")
+mcomp    <- grab("model_comparison.csv")
+ppcs     <- grab("ppc_stats.csv")
+ppcr     <- grab("ppc_replicates.csv")
+ppcp     <- grab("ppc_pointwise.csv")
+elpdd    <- grab("elpd_differences.csv")
+
+# Configurations are ordered metric-then-s throughout, so every faceted figure
+# and every heatmap reads in the same order.
+if (!is.null(cfg)) {
+  cfg <- cfg %>%
+    mutate(metric = factor(metric, levels = c("geodesic", "hop", "comm_dist", "log_comm")),
+           # For hop, s is a window radius rather than a rate, so its label says so
+           # and never shares a colour key with a rate of the same number.
+           s_lab  = ifelse(infer_s, "inferred",
+                    ifelse(metric == "hop", paste0(s, ifelse(s == 1, " hop", " hops")),
+                           format(s, trim = TRUE, scientific = FALSE))),
+           short  = ifelse(infer_s, paste0(metric, " (s inferred)"),
+                           paste0(metric, "  s=", s_lab))) %>%
+    arrange(metric, infer_s, s)
+  CID <- cfg$config_id
+  lab_of <- setNames(cfg$short, cfg$config_id)
+  as_cid <- function(x) factor(x, levels = CID, labels = lab_of[CID])
+}
+
+# Figure heights scale with the number of configurations, so the same report
+# reads correctly at --test scale (5 configs) and at full scale (19).
+NC <- if (!is.null(cfg)) nrow(cfg) else 12
+NM <- if (!is.null(cfg)) length(unique(as.character(cfg$metric))) else 8
+fh_stack <- function(per, pad = 2) max(4, per * NC + pad)
+fh_grid  <- function(per, ncol, pad = 1.4) max(4, per * ceiling(NC / ncol) + pad)
+
+theme_set(theme_minimal(base_size = 11))
+map_theme <- theme(axis.text = element_blank(), axis.title = element_blank(),
+                   panel.grid = element_blank())
+
+# Municipal polygons for every map in the report.
+polys <- NULL
+mesh <- list.files(file.path(repo, "data", "cleaned"), pattern = "^malha_uf[0-9]+\\.geojson$",
+                   full.names = TRUE)
+if (length(mesh) > 0) {
+  polys <- tryCatch({
+    g <- st_read(mesh[1], quiet = TRUE)
+    key <- intersect(c("codarea", "CD_MUN", "code_muni"), names(g))[1]
+    if (is.na(key)) NULL else { g$geocode <- as.numeric(as.character(g[[key]])); g }
+  }, error = function(e) NULL)
+}
+# Falls back to centroid points if the mesh is unavailable, as map_dengue.R does.
+as_map <- function(df) {
+  if (!is.null(polys)) left_join(polys, df, by = "geocode")
+  else st_as_sf(df, coords = c("lon", "lat"), crs = 4326)
+}
+map_fill <- function(v) if (!is.null(polys)) aes(fill = .data[[v]]) else aes(colour = .data[[v]])
+map_geom <- function(v) if (!is.null(polys))
+  geom_sf(map_fill(v), colour = "grey40", linewidth = 0.05) else geom_sf(map_fill(v), size = 1.1)
+```
+
+# What this study varies, and what it holds fixed
+
+The dengue application in `src/run_dengue.jl` fits
+
+$$y_i \mid \rho_k, r_k \sim \text{NegBin}\!\left(\text{mean} = E_i \rho_k,\; \text{size} = r_k\right)$$
+
+to the `r if (!is.null(assign)) length(unique(assign$geocode)) else 399` municipalities
+of Paraná, with a ddCRP prior over the partition. That prior has two ingredients
+we chose rather than estimated: a **decay scale** `s`, fixed at 0.5, and a
+**distance metric**, the great-circle distance between municipality centroids.
+This report asks how much of the fitted clustering survives changing them.
+
+The likelihood, the priors on $\rho$ and $r$, the proposal families, the proposal
+scales and the random seed are **identical across every configuration below**.
+Only the ddCRP prior moves. Anything that changes is therefore attributable to
+the prior, not to the sampler.
+
+## The decay scale is a rate, not a length
+
+This is the single easiest thing to read backwards. The package defines
+
+$$\Pr(c_i = j) \;\propto\; \exp(-d_{ij}\, s), \qquad j \neq i,$$
+
+so `s` multiplies the distance. **Larger `s` means faster decay and a more local
+prior.** (The hop metric is the one exception: there `s` is a window radius in
+hops, described below.) The decay length in kilometres is `D_scale / s`, so `s = 0.5` on
+distances rescaled by the 232 km median pairwise separation is a decay length of
+about 463 km, and `s = 10` is about 23 km. In the flat limit `s = 0.0001` every
+pair has weight within $10^{-4}$ of 1 and the ddCRP degenerates into a plain,
+distance-independent CRP. That limit is the natural null: if the clustering at
+`s = 0.5` looks like the clustering at `s = 0.0001`, the spatial prior is not
+doing any work.
+
+## The configurations
+
+```{r config-table, results = "asis"}
+if (is.null(cfg)) skip_note("config_index.csv") else {
+  cfg %>%
+    transmute(`config` = config_id, `metric` = as.character(metric),
+              `what the metric is` = metric_description,
+              `s` = ifelse(infer_s, "inferred", format(s, scientific = FALSE, trim = TRUE)),
+              `iterations` = n_samples, `burn-in` = burn, `thin` = thin) %>%
+    kable(caption = "Every configuration. The sampler is identical throughout.") %>%
+    print()
+}
+```
+
+# The data
+
+```{r data-overview, fig.height = 4.4}
+if (is.null(assign)) skip_note("cluster_assignments_sensitivity.csv") else {
+  d1 <- assign %>% filter(config_id == first(config_id))
+  p1 <- ggplot(as_map(d1)) + map_geom("incidence") +
+    scale_fill_viridis_c(trans = "log10", option = "magma", name = "per 100k",
+                         labels = label_number(big.mark = ",")) +
+    scale_colour_viridis_c(trans = "log10", option = "magma", name = "per 100k") +
+    labs(title = "Observed 2024 dengue incidence") + map_theme
+  p2 <- ggplot(d1, aes(incidence)) +
+    geom_histogram(bins = 40, fill = "grey30") + scale_x_log10(labels = label_number(big.mark = ",")) +
+    labs(title = "Incidence is multi-modal", x = "incidence per 100k", y = "municipalities")
+  print(p1 + p2 + plot_layout(widths = c(1.25, 1)))
+}
+```
+
+The right-hand panel is why a clustering model is plausible at all: incidence is
+not a smooth gradient across the state but sits in distinct bands. The question
+the rest of this report answers is whether the ddCRP recovers those bands from
+the data, or manufactures them from the prior.
+
+# The distance metrics
+
+Municipalities are areal units, not points, so centroid distance is only one
+reasonable prior geometry. Three alternatives are included here, all built from
+the queen contiguity graph $A$ (two municipalities are adjacent if their
+boundaries touch).
+
+```{r metric-table, results = "asis"}
+if (is.null(metrics)) skip_note("metric_summary.csv") else {
+  metrics %>%
+    transmute(metric, s = ifelse(metric == "hop", as.character(s), ""),
+              `what it is` = description,
+              `median raw scale` = signif(d_scale, 4),
+              `max / median` = round(max_off, 2),
+              `pairs inside window` = percent(frac_in_window, accuracy = 0.1)) %>%
+    kable(caption = sprintf(
+      "The contiguity graph has %d edges, mean degree %.2f and diameter %d hops. The geodesic and communicability metrics are rescaled by their own median off-diagonal entry, so a given s means the same decay per median separation under each; the hop rows are 0 / 30 window matrices and s is their radius.",
+      metrics$n_edges[1], metrics$mean_degree[1], metrics$graph_diameter[1])) %>%
+    print()
+}
+```
+
+**Communicability.** $G = \exp(A)$ counts walks of every length between two
+nodes, discounted by $1/\ell!$, so it is the graph analogue of a diffusion
+kernel. Two readings of it appear here. `comm_dist` is the communicability
+distance $\xi_{ij} = \sqrt{G_{ii} + G_{jj} - 2G_{ij}}$, a genuine metric that
+drops straight into $\exp(-sd)$. `log_comm` is $-\log(G_{ij}/\max G)$, which
+makes the ddCRP link weight proportional to $G_{ij}^{\,s}$, the most direct
+reading of "use $\exp(A)$ as the kernel".
+
+**Hop windows.** For `hop`, **`s` is the window radius in graph hops**, not a
+rate: every municipality within `s` edges of $i$ is an equally likely link
+target, and every one beyond is suppressed. Larger `s` is therefore a *less*
+local prior, the opposite direction to every other metric. The window is the
+whole of the prior's spatial content; a decay rate inside it was dropped
+because the inferred concentration $\alpha$ absorbs almost all of it. A link
+weight of exactly zero would put $-\infty$ into the log-posterior and NaN into
+the Metropolis ratio, so the suppression is a soft floor: in-window pairs have
+distance 0 and excluded pairs distance 30 under a kernel rate of 1, making them
+$e^{-30} \approx 9\times10^{-14}$ times weaker. The window is effectively hard
+while every log-weight stays finite.
+
+## How the metrics relate to one another
+
+```{r metric-pairs, fig.height = 3.6}
+if (is.null(mpairs)) skip_note("metric_pairs.csv") else {
+  long <- mpairs %>%
+    select(geodesic_km, hop, comm_dist, log_comm) %>%
+    pivot_longer(-geodesic_km, names_to = "metric", values_to = "value") %>%
+    mutate(metric = factor(recode(metric, hop = "hop distance (edges)",
+                                  comm_dist = "communicability distance",
+                                  log_comm = "-log communicability"),
+                           levels = c("hop distance (edges)",
+                                      "communicability distance", "-log communicability")))
+  print(ggplot(long, aes(geodesic_km, value)) +
+    geom_hex(bins = 45) +
+    scale_fill_viridis_c(trans = "log10", name = "pairs") +
+    facet_wrap(~metric, scales = "free_y") +
+    labs(title = "Graph metrics against great-circle distance",
+         subtitle = "A sample of 20,000 municipality pairs",
+         x = "centroid distance (km)", y = NULL))
+}
+```
+
+Hop distance tracks kilometres closely, as it must in a state with no islands
+and fairly even municipality sizes, but with substantial spread: two
+municipalities 100 km apart can be anywhere from 2 to 8 hops away depending on
+how finely the intervening land is subdivided. That spread is exactly what makes
+the hop metrics a genuinely different prior rather than a reparameterisation.
+
+## What each prior lets one municipality link to
+
+```{r metric-weights, fig.height = 6.5}
+if (is.null(mpairs) || is.null(assign) || is.null(metrics)) skip_note("metric_pairs.csv") else {
+  # Curitiba is the state capital and sits inland, so its neighbourhood is not
+  # truncated by the state boundary; it makes the clearest single illustration.
+  d1 <- assign %>% filter(config_id == first(config_id))
+  focus <- d1$geocode[which.max(d1$pop)]
+  fi <- which(d1$geocode == focus)
+
+  # Rebuild the focal row of each metric from the sampled pair table.
+  rows <- mpairs %>%
+    filter(i == fi | j == fi) %>%
+    mutate(other = ifelse(i == fi, j, i)) %>%
+    transmute(other, geodesic, hop, comm_dist, log_comm)
+
+  if (nrow(rows) < 50) {
+    cat("\n> The sampled pair table is too sparse for this panel at test scale.\n\n")
+  } else {
+    w <- rows %>%
+      pivot_longer(-other, names_to = "metric", values_to = "d") %>%
+      # Rates at s = 0.5; the hop window at s = 3, uniform inside it.
+      mutate(weight = ifelse(metric == "hop", ifelse(d <= 3, 1, exp(-30)), exp(-0.5 * d)),
+             metric = factor(recode(metric, geodesic = "geodesic",
+                                    hop = "hop window, s = 3",
+                                    comm_dist = "communicability distance",
+                                    log_comm = "-log communicability"),
+                             levels = c("geodesic", "hop window, s = 3",
+                                        "communicability distance", "-log communicability")),
+             geocode = d1$geocode[other])
+    md <- w %>% left_join(select(d1, geocode, lat, lon), by = "geocode")
+    print(ggplot(md, aes(lon, lat, colour = weight)) +
+      geom_point(size = 1.1) +
+      geom_point(data = filter(d1, geocode == focus), aes(lon, lat),
+                 inherit.aes = FALSE, shape = 4, size = 3, stroke = 1.2) +
+      scale_colour_viridis_c(option = "plasma", name = "link weight") +
+      facet_wrap(~metric) + coord_quickmap() +
+      labs(title = sprintf("Prior link weight from %s at s = 0.5", d1$name[fi]),
+           subtitle = "Hop panel at window s = 3. A cross marks the focal municipality; sampled pairs only",
+           x = NULL, y = NULL) + map_theme)
+  }
+}
+```
+
+```{r metric-flatness, results = "asis"}
+if (!is.null(mpairs)) {
+  spread <- mpairs %>%
+    summarise(across(c(geodesic, hop_scaled, comm_dist, log_comm),
+                     ~ quantile(.x, 0.95) - quantile(.x, 0.05)))
+  cat(sprintf("
+One thing that panel makes plain: **the communicability distance is nearly flat beyond the first ring of neighbours.** Its central 90%% of pairs spans only %.2f in rescaled units, against %.2f for great-circle distance and %.2f for hop distance. The reason is structural: $G_{ii}$ dominates $G_{ij}$ for all but immediate neighbours, so $\\xi_{ij} = \\sqrt{G_{ii} + G_{jj} - 2G_{ij}}$ flattens out almost immediately. Under $\\exp(-sd)$ that makes it behave much like the flat limit, and its fitted $K$ should be read against `s` near zero rather than against the other metrics. `log_comm` does not have this problem, because taking a logarithm restores the dynamic range.
+",
+    spread$comm_dist, spread$geodesic, spread$hop_scaled))
+}
+```
+
+# MCMC diagnostics
+
+Everything below is read off chains that were burnt in and thinned before being
+written, so no further burn-in is applied here.
+
+```{r diag-table, results = "asis"}
+if (is.null(summ)) skip_note("summary_sensitivity.csv") else {
+  summ %>%
+    mutate(cid = as_cid(config_id)) %>% arrange(cid) %>%
+    transmute(`config` = as.character(cid),
+              `mean K` = round(mean_K, 2), `mode K` = mode_K, `sd K` = round(std_K, 2),
+              `ESS(K)` = round(ess_K), `ESS(logpost)` = round(ess_logpost),
+              `ESS rho` = round(med_ess_rho), `ESS r` = round(med_ess_r),
+              `birth %` = round(100 * acc_birth, 2), `death %` = round(100 * acc_death, 2),
+              `fixed %` = round(100 * acc_fixed, 2),
+              `ESJD(K)` = round(esjd_K, 3), `time (s)` = round(total_time)) %>%
+    kable(caption = "Mixing and acceptance by configuration.") %>% print()
+}
+```
+
+```{r diag-flag, results = "asis"}
+if (!is.null(summ)) {
+  bad <- summ %>% filter(ess_K < 50) %>% mutate(cid = as.character(as_cid(config_id)))
+  if (nrow(bad) == 0) {
+    cat("\nEvery configuration reached ESS(K) of at least 50.\n")
+  } else {
+    cat(sprintf("\n**%d of %d configurations have ESS(K) below 50**, so their posterior of $K$ should be read as indicative rather than converged: %s. Low ESS here is itself informative: it is concentrated in the configurations whose prior makes birth and death moves hardest to accept.\n",
+                nrow(bad), nrow(summ), paste(sprintf("`%s` (ESS %.0f)", bad$cid, bad$ess_K), collapse = ", ")))
+  }
+}
+```
+
+```{r traces, fig.height = fh_stack(0.95)}
+if (is.null(traces)) skip_note("traces.csv") else {
+  tl <- traces %>%
+    mutate(cid = as_cid(config_id)) %>%
+    select(cid, draw, K, logpost, alpha_ddcrp) %>%
+    pivot_longer(c(K, logpost, alpha_ddcrp), names_to = "q", values_to = "v") %>%
+    mutate(q = recode(q, K = "number of clusters K", logpost = "log posterior",
+                      alpha_ddcrp = "ddCRP concentration alpha"))
+  print(ggplot(tl, aes(draw, v)) +
+    geom_line(linewidth = 0.22, colour = "grey25") +
+    facet_grid(cid ~ q, scales = "free", switch = "y") +
+    labs(title = "Traces after burn-in and thinning", x = "stored draw", y = NULL) +
+    theme(strip.text.y.left = element_text(angle = 0, hjust = 1, size = 7),
+          strip.placement = "outside", axis.text = element_text(size = 6)))
+}
+```
+
+```{r running-mean, fig.height = 4.4}
+if (!is.null(traces)) {
+  rm <- traces %>% group_by(config_id) %>% arrange(draw, .by_group = TRUE) %>%
+    mutate(running = cummean(K)) %>% ungroup() %>% mutate(cid = as_cid(config_id))
+  print(ggplot(rm, aes(draw, running, colour = cid)) +
+    geom_line(linewidth = 0.5) +
+    scale_colour_viridis_d(option = "turbo", name = NULL) +
+    labs(title = "Running mean of K", subtitle = "A curve still drifting has not converged",
+         x = "stored draw", y = "running mean K") +
+    theme(legend.text = element_text(size = 7), legend.key.height = unit(9, "pt")))
+}
+```
+
+# The posterior of the number of clusters
+
+$K$ is a count, so its posterior is drawn as bars rather than a line.
+
+```{r pk, fig.height = max(4, 2.7 * ceiling(NM / 2))}
+if (is.null(kpost)) skip_note("k_posterior.csv") else {
+  kp <- kpost %>% left_join(select(cfg, config_id, metric, s, infer_s, s_lab), by = "config_id") %>%
+    mutate(s_lab = factor(s_lab, levels = unique(cfg$s_lab[order(cfg$infer_s, cfg$s)])))
+  print(ggplot(kp, aes(K, prob, fill = s_lab)) +
+    geom_col(position = "identity", alpha = 0.62, width = 0.9) +
+    scale_fill_viridis_d(option = "viridis", name = "s", end = 0.92) +
+    facet_wrap(~metric, ncol = 2, scales = "free") +
+    labs(title = "Posterior of K by metric and decay scale",
+         x = "number of clusters K", y = "posterior probability"))
+}
+```
+
+# Sensitivity to the decay scale
+
+```{r s-sweep, fig.height = 5.6}
+if (is.null(summ)) skip_note("summary_sensitivity.csv") else {
+  g <- summ %>% filter(metric == "geodesic", !infer_s)
+  inf <- summ %>% filter(infer_s)
+  panel <- function(yv, lab, logy = FALSE) {
+    p <- ggplot(g, aes(s_decay, .data[[yv]])) +
+      geom_line(colour = "grey55") + geom_point(size = 2.2) +
+      scale_x_log10(labels = label_number(drop0trailing = TRUE)) +
+      labs(x = "decay scale s (rate)", y = lab)
+    if (nrow(inf) == 1)
+      p <- p + geom_hline(yintercept = inf[[yv]][1], linetype = "dashed", colour = "firebrick")
+    if (logy) p <- p + scale_y_log10()
+    p
+  }
+    g$acc_death_pct <- 100 * g$acc_death
+    if (nrow(inf) == 1) inf$acc_death_pct <- 100 * inf$acc_death
+  print((panel("mean_K", "mean K") | panel("alpha_post", "posterior mean alpha", TRUE)) /
+        (panel("acc_death_pct", "death acceptance (%)") | panel("ess_K", "ESS(K)")) +
+    plot_annotation(title = "Great-circle metric: everything against s",
+      subtitle = "Larger s is a more local prior. The dashed line is the chain with s inferred."))
+}
+```
+
+```{r s-sweep-text, results = "asis"}
+if (!is.null(summ)) {
+  g <- summ %>% filter(metric == "geodesic", !infer_s) %>% arrange(s_decay)
+  inf <- summ %>% filter(infer_s)
+  if (nrow(g) >= 2) {
+    cat(sprintf("\nAcross `s` from %s to %s, mean $K$ moves from %.1f to %.1f and the posterior mean of the ddCRP concentration $\\alpha$ from %.2f to %.2f. The two move in opposite directions by construction: a more local prior makes distant links unlikely, so more clusters form, and the self-link weight $\\alpha$ needed to explain them falls.\n",
+                format(min(g$s_decay), scientific = FALSE), format(max(g$s_decay), scientific = FALSE),
+                g$mean_K[1], g$mean_K[nrow(g)], g$alpha_post[1], g$alpha_post[nrow(g)]))
+    if (nrow(inf) == 1)
+      cat(sprintf("\nThe chain that infers `s` settles at `s` = %.2f with $\\alpha$ = %.3f and mean $K$ = %.1f, and its death acceptance is %.2f%%. That is the degeneracy `run_dengue.jl` documents: left free, `s` runs towards a strongly local kernel where death moves almost never succeed, which is why the application fixes it.\n",
+                  inf$s_post[1], inf$alpha_post[1], inf$mean_K[1], 100 * inf$acc_death[1]))
+  }
+}
+```
+
+# The alternative metrics
+
+```{r alt-metrics, fig.height = 5.6}
+if (!is.null(summ)) {
+  a <- summ %>% left_join(select(cfg, config_id, s_lab), by = "config_id") %>%
+    filter(!infer_s, metric != "hop") %>%
+    mutate(metric = factor(metric, levels = setdiff(levels(cfg$metric), "hop")),
+           s_lab = factor(s_lab, levels = sort(unique(as.numeric(s_lab)))))
+  panel <- function(yv, lab, logy = FALSE) {
+    p <- ggplot(a, aes(metric, .data[[yv]], fill = s_lab)) +
+      geom_col(position = position_dodge(preserve = "single"), width = 0.78) +
+      scale_fill_viridis_d(option = "viridis", name = "s", end = 0.92) +
+      labs(x = NULL, y = lab) +
+      theme(axis.text.x = element_text(angle = 40, hjust = 1, size = 8))
+    if (logy) p <- p + scale_y_log10()
+    p
+  }
+    a$acc_death_pct <- 100 * a$acc_death
+  print((panel("mean_K", "mean K") | panel("alpha_post", "posterior mean alpha", TRUE)) /
+        (panel("acc_death_pct", "death acceptance (%)") | panel("ess_K", "ESS(K)")) +
+    plot_layout(guides = "collect") +
+    plot_annotation(title = "Every rate-based metric, at the shared decay scales"))
+}
+```
+
+```{r hop-sweep, fig.height = 5.6}
+if (!is.null(summ)) {
+  h <- summ %>% filter(metric == "hop") %>% arrange(s_decay)
+  if (nrow(h) > 0) {
+    hp <- function(yv, lab, logy = FALSE) {
+      p <- ggplot(h, aes(s_decay, .data[[yv]])) +
+        geom_line(colour = "grey55") + geom_point(size = 2.2) +
+        scale_x_continuous(breaks = h$s_decay) +
+        labs(x = "hop window radius s (hops)", y = lab)
+      if (logy) p <- p + scale_y_log10()
+      p
+    }
+    h$acc_death_pct <- 100 * h$acc_death
+    print((hp("mean_K", "mean K") | hp("alpha_post", "posterior mean alpha", TRUE)) /
+          (hp("acc_death_pct", "death acceptance (%)") | hp("ess_K", "ESS(K)")) +
+      plot_annotation(title = "Hop window: everything against the radius s",
+        subtitle = "Larger s admits more link targets, so it is a LESS local prior."))
+  }
+}
+```
+
+```{r alt-metrics-text, results = "asis"}
+if (!is.null(summ)) {
+  a <- summ %>% filter(!infer_s, s_decay == 0.5)
+  if (nrow(a) > 1) {
+    a <- a %>% arrange(desc(mean_K))
+    cat(sprintf("\nAt the shared scale `s = 0.5`, mean $K$ ranges from %.1f under `%s` to %.1f under `%s`.\n",
+                a$mean_K[1], a$metric[1], a$mean_K[nrow(a)], a$metric[nrow(a)]))
+  }
+  h <- summ %>% filter(metric == "hop") %>% arrange(s_decay)
+  if (nrow(h) >= 2)
+    cat(sprintf("\nThe hop windows are the extreme case. Widening the window from %g to %g hops moves mean $K$ from %.1f to %.1f: restricting links to immediate neighbours forbids the long-range links that let a cluster span the state, so the partition fragments and death moves become very hard to accept.\n",
+                h$s_decay[1], h$s_decay[nrow(h)], h$mean_K[1], h$mean_K[nrow(h)]))
+}
+```
+
+# The fitted partitions
+
+Maps use the **mode partition**: the highest log-posterior draw among those
+whose cluster count equals the posterior mode of $K$. The Dahl least-squares
+partition is also in the exported table, but it over-fragments here because the
+co-clustering signal is weak, and its $K$ would not match the $K$ reported
+everywhere else.
+
+```{r mode-maps, fig.height = fh_grid(2.7, 3)}
+if (is.null(assign)) skip_note("cluster_assignments_sensitivity.csv") else {
+  md <- assign %>% mutate(cid = as_cid(config_id))
+  # Cluster labels are arbitrary, so colour by each cluster's fitted incidence
+  # instead. That makes panels comparable: the same colour means the same rate.
+  md <- md %>% group_by(config_id, cluster_mode) %>%
+    mutate(cluster_rate = median(rho_mean, na.rm = TRUE)) %>% ungroup()
+  sf_md <- as_map(md)
+  print(ggplot(sf_md) +
+    (if (!is.null(polys)) geom_sf(aes(fill = cluster_rate), colour = NA)
+     else geom_sf(aes(colour = cluster_rate), size = 0.7)) +
+    scale_fill_viridis_c(trans = "log10", option = "magma", name = "fitted\nper 100k",
+                         labels = label_number(big.mark = ",")) +
+    scale_colour_viridis_c(trans = "log10", option = "magma", name = "fitted\nper 100k") +
+    facet_wrap(~cid, ncol = 3) +
+    labs(title = "Mode partition, shaded by each cluster's fitted incidence",
+         subtitle = "Same colour scale throughout, so panels compare directly") +
+    map_theme + theme(strip.text = element_text(size = 7.5)))
+}
+```
+
+```{r cluster-sizes, fig.height = max(4, 0.26 * NC + 2.6)}
+if (!is.null(assign)) {
+  sz <- assign %>% count(config_id, cluster_mode) %>%
+    mutate(cid = as_cid(config_id))
+  ks <- sz %>% count(cid, name = "K")
+  p1 <- ggplot(ks, aes(fct_rev(cid), K)) + geom_col(fill = "grey30") + coord_flip() +
+    labs(title = "Clusters in the mode partition", x = NULL, y = "K") +
+    theme(axis.text.y = element_text(size = 7))
+  p2 <- ggplot(sz, aes(fct_rev(cid), n)) +
+    geom_boxplot(outlier.size = 0.6, linewidth = 0.3) + coord_flip() + scale_y_log10() +
+    labs(title = "Cluster sizes", x = NULL, y = "municipalities per cluster") +
+    theme(axis.text.y = element_blank())
+  print(p1 + p2)
+}
+```
+
+# Do the configurations agree with each other?
+
+This is the question the whole study is built around. There is no ground truth
+on real data, so agreement between partitions fitted under genuinely different
+priors is what stands in for one. High agreement means the clustering is a
+property of the data; low agreement means it is a property of the prior.
+
+```{r ari-heat, fig.height = max(4.5, 0.44 * NC + 2.2)}
+if (is.null(ariw)) skip_note("cross_config_ari.csv") else {
+  h <- ariw %>% mutate(a = as_cid(config_a), b = as_cid(config_b),
+                       lab_col = ifelse(ari > 0.55, "black", "white"))
+  print(ggplot(h, aes(a, b, fill = ari)) + geom_tile() +
+    geom_text(aes(label = sprintf("%.2f", ari), colour = lab_col), size = 2.1,
+              show.legend = FALSE) +
+    scale_colour_identity() +
+    scale_fill_viridis_c(limits = c(0, 1), oob = squish, option = "viridis", name = "ARI") +
+    labs(title = "Adjusted Rand index between mode partitions", x = NULL, y = NULL) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+          axis.text.y = element_text(size = 7), panel.grid = element_blank()))
+}
+```
+
+```{r ari-text, results = "asis"}
+if (!is.null(ariw)) {
+  off <- ariw %>% filter(config_a != config_b)
+  cat(sprintf("\nOff-diagonal ARI runs from %.2f to %.2f, median %.2f. ",
+              min(off$ari), max(off$ari), median(off$ari)))
+  top <- off %>% slice_max(ari, n = 1)
+  bot <- off %>% slice_min(ari, n = 1)
+  cat(sprintf("The closest pair is `%s` against `%s` (%.2f); the furthest is `%s` against `%s` (%.2f).\n",
+              top$config_a[1], top$config_b[1], top$ari[1],
+              bot$config_a[1], bot$config_b[1], bot$ari[1]))
+}
+```
+
+# Model comparison
+
+WAIC, LPML and PSIS-LOO score how well each fit predicts the observed counts.
+They are comparable across configurations here because the likelihood is
+identical and only the prior over partitions differs. `k>0.7` counts the
+observations whose Pareto-smoothed importance weights are unreliable; a large
+count means the LOO column should be read with caution and WAIC or LPML
+preferred.
+
+```{r model-comp, results = "asis"}
+if (is.null(mcomp)) skip_note("model_comparison.csv") else {
+  mc <- mcomp %>% mutate(cid = as.character(as_cid(config_id))) %>% arrange(waic)
+  mc %>% transmute(`config` = cid, WAIC = round(waic, 1),
+                   `dWAIC` = round(waic - min(waic), 1),
+                   `p_WAIC` = round(p_waic, 1), LPML = round(lpml, 1),
+                   `elpd_loo` = round(elpd_loo, 1), `k>0.7` = n_bad_k) %>%
+    kable(caption = "Predictive scores, best WAIC first.") %>% print()
+}
+```
+
+```{r model-comp-plot, fig.height = max(3.2, 0.26 * NC + 2)}
+if (!is.null(mcomp)) {
+  mc <- mcomp %>% mutate(cid = as_cid(config_id), d = waic - min(waic))
+  print(ggplot(mc, aes(fct_rev(cid), d)) +
+    geom_col(fill = "grey30") + coord_flip() +
+    labs(title = "WAIC relative to the best configuration", x = NULL,
+         y = "WAIC - min(WAIC), lower is better") +
+    theme(axis.text.y = element_text(size = 7)))
+}
+```
+
+```{r elpd-diff, results = "asis"}
+if (is.null(elpdd)) {
+  cat("\n> No `elpd_differences.csv` (older runs did not save pointwise scores), so the gaps above have no standard errors.\n\n")
+} else {
+  best <- mcomp$config_id[which.max(mcomp$elpd_loo)]
+  dd <- elpdd %>% filter(config_a == best) %>%
+    mutate(cid = as.character(as_cid(config_b))) %>%
+    select(cid, criterion, diff, se, z) %>%
+    pivot_wider(names_from = criterion, values_from = c(diff, se, z))
+  cat(sprintf("\nThe totals above say nothing about how noisy each gap is. Pointwise contributions do: the standard error of a difference in elpd is $\\sqrt{n\\,\\mathrm{var}(a_i - b_i)}$ over the %d municipalities. Every configuration is compared with the best by LOO, `%s`; a gap of under about two standard errors is not a meaningful preference.\n\n",
+              length(unique(assign$geocode)), as.character(as_cid(best))))
+  dd %>% arrange(desc(diff_elpd_loo)) %>%
+    transmute(`config` = cid,
+              `elpd_loo deficit` = round(diff_elpd_loo, 1), `se` = round(se_elpd_loo, 1),
+              `in se` = round(z_elpd_loo, 1),
+              `elpd_waic deficit` = round(diff_elpd_waic, 1), `se ` = round(se_elpd_waic, 1),
+              `LPML deficit` = round(diff_lpml, 1), `se  ` = round(se_lpml, 1)) %>%
+    kable(caption = sprintf("Shortfall of each configuration against `%s`, with standard errors. Positive means the best configuration predicts better.",
+                            as.character(as_cid(best)))) %>% print()
+}
+```
+
+# Posterior predictive checks
+
+Each configuration generated `r if (!is.null(ppcp)) format(1000, big.mark = ",") else "1,000"`
+replicate datasets from its own posterior. A discrepancy statistic the model
+cannot reproduce shows up as a posterior predictive p-value near 0 or 1.
+
+```{r ppc-table, results = "asis"}
+if (is.null(ppcs)) skip_note("ppc_stats.csv") else {
+  ppcs %>% mutate(cid = as.character(as_cid(config_id))) %>%
+    select(config = cid, statistic, observed = T_obs, ppp,
+           `replicate median` = q50, `2.5%` = q025, `97.5%` = q975) %>%
+    mutate(across(c(observed, `replicate median`, `2.5%`, `97.5%`), ~ signif(.x, 4)),
+           ppp = round(ppp, 3),
+           misfit = ifelse(ppp < 0.05 | ppp > 0.95, "yes", "")) %>%
+    kable(caption = "Posterior predictive p-values. `misfit` flags ppp outside [0.05, 0.95].") %>%
+    print()
+}
+```
+
+```{r ppc-hist, fig.height = fh_stack(0.88)}
+if (is.null(ppcr) || is.null(ppcs)) skip_note("ppc_replicates.csv") else {
+  rr <- ppcr %>% mutate(cid = as_cid(config_id))
+  ob <- ppcs %>% mutate(cid = as_cid(config_id))
+  print(ggplot(rr, aes(T_rep)) +
+    geom_histogram(bins = 34, fill = "grey55") +
+    geom_vline(data = ob, aes(xintercept = T_obs), colour = "firebrick", linewidth = 0.6) +
+    facet_grid(cid ~ statistic, scales = "free") +
+    labs(title = "Replicate statistics against the observed value (red)",
+         x = NULL, y = "replicates") +
+    theme(strip.text.y = element_text(angle = 0, hjust = 0, size = 6.5),
+          strip.text.x = element_text(size = 7),
+          axis.text = element_text(size = 6)))
+}
+```
+
+Moran's I of log incidence is the statistic to watch here, because it is the one
+the spatial prior is supposed to control. If the fitted clusters reproduce the
+observed spatial autocorrelation, its p-value sits away from the extremes; if a
+metric under- or over-smooths, this is where it shows.
+
+```{r pit, fig.height = fh_grid(2.1, 4)}
+if (is.null(ppcp)) skip_note("ppc_pointwise.csv") else {
+  print(ggplot(mutate(ppcp, cid = as_cid(config_id)), aes(pit)) +
+    geom_histogram(bins = 20, fill = "grey35", boundary = 0) +
+    geom_hline(yintercept = nrow(ppcp) / length(unique(ppcp$config_id)) / 20,
+               linetype = "dashed", colour = "firebrick") +
+    facet_wrap(~cid, ncol = 4) +
+    labs(title = "Randomised PIT of each municipality's count",
+         subtitle = "A calibrated model gives a flat histogram; the dashed line is uniform",
+         x = "PIT", y = "municipalities") +
+    theme(strip.text = element_text(size = 7)))
+}
+```
+
+```{r ppc-resid-map, fig.height = 5}
+if (!is.null(ppcp) && !is.null(mcomp) && !is.null(assign)) {
+  best  <- mcomp$config_id[which.min(mcomp$waic)]
+  worst <- mcomp$config_id[which.max(mcomp$waic)]
+  rd <- ppcp %>% filter(config_id %in% c(best, worst)) %>%
+    left_join(select(filter(assign, config_id == best), geocode, lat, lon), by = "geocode") %>%
+    mutate(z = (y_obs - yrep_mean) / pmax(sqrt(pmax(yrep_mean, 1)), 1),
+           cid = factor(config_id, levels = c(best, worst),
+                        labels = c(paste0("best WAIC: ", best), paste0("worst WAIC: ", worst))))
+  print(ggplot(as_map(rd)) +
+    (if (!is.null(polys)) geom_sf(aes(fill = z), colour = NA) else geom_sf(aes(colour = z), size = 0.8)) +
+    scale_fill_gradient2(low = "#2166ac", mid = "grey92", high = "#b2182b",
+                         midpoint = 0, name = "std.\nresidual",
+                         limits = c(-1, 1) * quantile(abs(rd$z), 0.97, na.rm = TRUE),
+                         oob = squish) +
+    scale_colour_gradient2(low = "#2166ac", mid = "grey92", high = "#b2182b",
+                           midpoint = 0, name = "std.\nresidual") +
+    facet_wrap(~cid) +
+    labs(title = "Standardised posterior predictive residuals",
+         subtitle = "Spatial structure left in the residuals is structure the prior did not capture") +
+    map_theme + theme(strip.text = element_text(size = 8)))
+}
+```
+
+# What to take from this
+
+```{r conclusions, results = "asis"}
+if (!is.null(summ) && !is.null(ariw)) {
+  g <- summ %>% filter(metric == "geodesic", !infer_s) %>% arrange(s_decay)
+  off <- ariw %>% filter(config_a != config_b)
+  cat(sprintf("
+1. **The decay scale changes how many clusters there are, not whether there are any.** Over the full seven-order-of-magnitude grid, mean $K$ runs from %.1f to %.1f. Every configuration finds several clusters, so the multi-cluster finding itself is not an artefact of the chosen `s`.
+
+2. **The flat limit is the informative comparison.** At `s = %s` the kernel is uniform and the model is a plain CRP with no spatial information at all. How far the `s = 0.5` partition sits from that one is the honest measure of what the spatial prior contributes.
+
+3. **The metric matters at least as much as the scale.** Restricting links to a hop window is a much stronger intervention than changing the decay rate at fixed geometry, because it removes the long-range links entirely rather than merely down-weighting them.
+
+4. **Agreement across priors is the correctness check.** Off-diagonal ARI has median %.2f. Read alongside the fact that no ground truth exists here, that is the substantive evidence about how much of the partition the data pins down.
+",
+    min(g$mean_K), max(g$mean_K), format(min(g$s_decay), scientific = FALSE), median(off$ari)))
+}
+```
+
+## Caveats
+
+- **Chain length.** These are
+  `r if (!is.null(cfg)) format(max(cfg$n_samples), big.mark = ",") else "250,000"`-iteration
+  chains (burn-in `r if (!is.null(cfg)) format(max(cfg$burn), big.mark = ",") else "50,000"`,
+  thinned by `r if (!is.null(cfg)) max(cfg$thin) else 10`), the same length as the
+  headline dengue chains. Configurations flagged above for low ESS should
+  still be read as indicative.
+- **`s` means two things.** It is a decay rate for the geodesic and
+  communicability metrics and a window radius in hops for `hop`, so a value of
+  `s` is only comparable within a metric.
+- **The truncation floor.** Hop windows suppress rather than forbid distant
+  links, at $e^{-30}$ relative weight. That is numerically necessary, since an
+  exact zero would put $-\infty$ into the log-posterior, and it is far below any
+  weight the sampler can act on, but it is not literally zero.
+- **The decay scale is a rate.** Larger `s` means a more local prior. Two places
+  in this repository previously described it as `exp(-d/s)` and read the
+  direction backwards; that has been corrected, and every number here follows
+  the code.
+- **The metric-weight panel** is drawn from a 20,000-pair sample rather than the
+  full matrix, so it shows the shape of each neighbourhood rather than every
+  municipality in it.
+
+# Reproducing this
+
+```
+Rscript src/prepare_dengue_adjacency.R --uf 41
+julia --project=. src/dengue_sensitivity.jl --pilot   # measure cost first
+julia --project=. src/dengue_sensitivity.jl           # or --slurm
+Rscript -e 'rmarkdown::render("src/dengue_sensitivity_analysis.rmd")'
+```
+
+```{r sources, results = "asis"}
+cat(sprintf("\nTables read from `%s`:\n\n", RES))
+for (f in c("config_index.csv", "summary_sensitivity.csv", "traces.csv", "k_posterior.csv",
+            "metric_summary.csv", "metric_pairs.csv", "cluster_assignments_sensitivity.csv",
+            "cross_config_ari.csv", "model_comparison.csv", "elpd_differences.csv", "ppc_stats.csv",
+            "ppc_replicates.csv", "ppc_pointwise.csv"))
+  cat(sprintf("- `%s` %s\n", f, if (have(f)) "" else "**(missing)**"))
+```

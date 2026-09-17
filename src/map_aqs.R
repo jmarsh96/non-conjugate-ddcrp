@@ -55,7 +55,7 @@ sites <- st_as_sf(cl, coords = c("lon", "lat"), crs = 4326)
 # State outlines as a basemap, when the cached shapefile is present.
 # ---------------------------------------------------------------------------
 
-shp <- file.path(repo, "data", "cb_2023_us_state_20m", "cb_2023_us_state_20m.shp")
+shp <- file.path(repo, "data", "cleaned", "cb_2023_us_state_20m", "cb_2023_us_state_20m.shp")
 states <- if (file.exists(shp)) {
   tryCatch({
     g <- st_read(shp, quiet = TRUE)

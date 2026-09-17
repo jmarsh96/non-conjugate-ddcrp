@@ -43,11 +43,11 @@ mkdir -p logs
 
 REGION="${AQS_REGION:-conus}"
 
-# Only the small derived per-site CSV is needed, and it is committed to data/;
+# Only the small derived per-site CSV is needed, and it is committed to data/cleaned/;
 # the 305 MB raw daily file is not required here. Building a region that has
 # not been prepared needs internet, so do it on a login node.
-if [[ ! -f "data/aqs_pm25_2023_${REGION}.csv" ]]; then
-  echo "ERROR: data/aqs_pm25_2023_${REGION}.csv is missing." >&2
+if [[ ! -f "data/cleaned/aqs_pm25_2023_${REGION}.csv" ]]; then
+  echo "ERROR: data/cleaned/aqs_pm25_2023_${REGION}.csv is missing." >&2
   echo "  Run this on a login node first (it needs internet access):" >&2
   echo "    julia --project=. src/prepare_aqs_data.jl --year 2023 --region ${REGION}" >&2
   exit 1

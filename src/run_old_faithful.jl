@@ -41,7 +41,7 @@ const OPTS = MCMCOptions(
 
 # load and clean data
 println("Loading Old Faithful data...")
-faithful = DataFrame(CSV.File(joinpath("data", "faithful.csv")))
+faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "cleaned", "faithful.csv")))
 y = Float64.(faithful.eruptions)   # response: eruption duration (min)
 w = Float64.(faithful.waiting)     # covariate: waiting time (min)
 n = length(y)

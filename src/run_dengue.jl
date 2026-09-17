@@ -233,7 +233,7 @@ mkpath(OUTDIR)
 # Load data
 # ============================================================================
 
-const DATA_FILE = joinpath(@__DIR__, "..", "data", "dengue_uf$(UF)_$(YEAR).csv")
+const DATA_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(UF)_$(YEAR).csv")
 isfile(DATA_FILE) || error("""
     Missing $DATA_FILE
     Run: julia --project=. src/prepare_dengue_data.jl --uf $UF --year $YEAR""")
@@ -270,18 +270,26 @@ const PRIORS = NegBinPopulationRatesPriors(ρ_a = ρ_A, ρ_b = ρ_A / ρ_BAR, r_
 const PRIORS_POIS = PoissonPopulationRatesPriors(ρ_A, ρ_A / ρ_BAR)
 const PRIORS_POIS_MARG = PoissonPopulationRatesMargPriors(ρ_A, ρ_A / ρ_BAR)
 
-# ddCRP decay scale. FIXED rather than inferred, deliberately: with s free the
-# chain drives s → ~15, which flattens exp(-d/s) to ≈1 over the whole state and
-# degenerates the ddCRP into a distance-independent CRP (α → 0.03, K → 27, death
-# acceptance → 0.7%). s = 0.5 on distances normalised by the median pairwise
-# distance is a decay length of about half that median — an epidemiologically
-# sensible neighbourhood. Part 4 reports the sensitivity of the results to this
-# choice, and runs one s-inferred chain so the pathology is documented, not hidden.
+# ddCRP decay scale. NOTE s is a RATE, not a length: the package defines
+# `exp_decay(d; scale) = exp(-d * scale)`, so the link weight is exp(-d*s) and
+# LARGER s means FASTER decay and a MORE LOCAL prior. The decay length is
+# D_SCALE / s km.
+#
+# FIXED rather than inferred, deliberately: with s free the chain drives
+# s → ~15, i.e. a decay length of ~15 km, far below the spacing between
+# municipality centroids. Every link then has negligible weight against the
+# self-link, so the chain fragments and stalls (α → 0.05, K → 29, death
+# acceptance → 0.5%). s = 0.5 is a decay length of about twice the median
+# pairwise distance, an epidemiologically sensible neighbourhood. Part 4 reports
+# the sensitivity of the results to this choice, and runs one s-inferred chain
+# so the pathology is documented, not hidden. `src/dengue_sensitivity.jl`
+# extends that sweep across seven orders of magnitude and across alternative
+# distance metrics.
 const S_DECAY = 0.5
 
 @printf("  ρ prior: Gamma(%.1f, rate %.2e) ⇒ mean %.0f per 100k\n", ρ_A, ρ_A / ρ_BAR, ρ_BAR)
-@printf("  ddCRP decay scale s = %.2f fixed (≈ %.0f km decay length)%s\n",
-        S_DECAY, S_DECAY * D_SCALE, INFER_S ? "  [OVERRIDDEN: --infer_s given]" : "")
+@printf("  ddCRP decay scale s = %.2f fixed, a rate (≈ %.0f km decay length)%s\n",
+        S_DECAY, D_SCALE / S_DECAY, INFER_S ? "  [OVERRIDDEN: --infer_s given]" : "")
 
 # ============================================================================
 # Config builder

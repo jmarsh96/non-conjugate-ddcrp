@@ -191,7 +191,7 @@ mkpath(OUTDIR)
 # Load data
 # ============================================================================
 
-const DATA_FILE = joinpath(@__DIR__, "..", "data", "aqs_pm25_$(YEAR)_$(REGION).csv")
+const DATA_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "aqs_pm25_$(YEAR)_$(REGION).csv")
 isfile(DATA_FILE) || error("""
     Missing $DATA_FILE
     Run: julia --project=. src/prepare_aqs_data.jl --year $YEAR --region $REGION""")
@@ -248,7 +248,9 @@ const PRIORS_SYM = SkewNormalClustersPriors(
 # sensitivity to this choice.
 const S_DECAY = 0.5
 
-@printf("  ddCRP decay scale s = %.2f fixed (≈ %.0f km decay length)\n", S_DECAY, S_DECAY * D_SCALE)
+# s is a RATE: the kernel is exp(-d*s), so the decay length is D_SCALE / s.
+@printf("  ddCRP decay scale s = %.2f fixed, a rate (≈ %.0f km decay length)\n",
+        S_DECAY, D_SCALE / S_DECAY)
 
 # ============================================================================
 # Config builder

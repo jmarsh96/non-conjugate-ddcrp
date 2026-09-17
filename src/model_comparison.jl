@@ -55,13 +55,22 @@ Log Pseudo-Marginal Likelihood via the CPO harmonic-mean estimator. Higher is
 better. Computed with log-sum-exp for stability.
 """
 function lpml_from_loglik(ll::AbstractMatrix{<:Real})
-    lpml = 0.0
+    return sum(lcpo_from_loglik(ll))
+end
+
+"""
+    lcpo_from_loglik(ll) -> Vector{Float64}
+
+Per-observation log CPO, whose sum is the LPML.
+"""
+function lcpo_from_loglik(ll::AbstractMatrix{<:Real})
+    lcpo = Vector{Float64}(undef, size(ll, 2))
     for i in 1:size(ll, 2)
         neg = -(@view ll[:, i])
         m = maximum(neg)
-        lpml += -(m + log(mean(exp.(neg .- m))))
+        lcpo[i] = -(m + log(mean(exp.(neg .- m))))
     end
-    return lpml
+    return lcpo
 end
 
 """
@@ -72,17 +81,45 @@ diagnostics (`k̂ > 0.7`) — a large count means the LOO estimate should not be
 trusted and WAIC/LPML should be read instead.
 """
 function score_fit(label::AbstractString, ll::AbstractMatrix{<:Real})
+    return first(score_fit_pointwise(label, ll))
+end
+
+"""
+    score_fit_pointwise(label, ll) -> (scores, pointwise)
+
+`score_fit` plus the per-observation contributions, from one pass over `ll`.
+`pointwise` holds `elpd_waic_i` (= -waic_i/2), `elpd_loo_i`, `lcpo_i` and
+`k_hat`, each of length n_obs. Comparing two fits needs these: the standard
+error of an elpd difference is `sqrt(n * var(a_i - b_i))`, which the totals
+alone cannot give.
+"""
+function score_fit_pointwise(label::AbstractString, ll::AbstractMatrix{<:Real})
     w = waic_from_loglik(ll)
     loo = compute_psis_loo(Matrix{Float64}(ll))
-    return (
+    lcpo = lcpo_from_loglik(ll)
+    scores = (
         label = label,
         waic = w.waic,
         lppd = w.lppd,
         p_waic = w.p_waic,
-        lpml = lpml_from_loglik(ll),
+        lpml = sum(lcpo),
         elpd_loo = loo.elpd_loo,
         n_bad_k = count(>(0.7), loo.k_hat),
     )
+    pointwise = (elpd_waic_i = -w.waic_i ./ 2, elpd_loo_i = loo.loo_i,
+                 lcpo_i = lcpo, k_hat = loo.k_hat)
+    return scores, pointwise
+end
+
+"""
+    elpd_difference(a, b) -> (diff, se)
+
+Difference in total elpd between two fits (positive favours `a`) and its
+standard error, from matched pointwise contributions.
+"""
+function elpd_difference(a::AbstractVector{<:Real}, b::AbstractVector{<:Real})
+    d = a .- b
+    return (diff = sum(d), se = sqrt(length(d) * var(d)))
 end
 
 """

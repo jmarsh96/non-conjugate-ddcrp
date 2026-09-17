@@ -18,7 +18,7 @@
 #   - municipality centroids from the `municipios-brasileiros` dataset
 #
 # The InfoDengue step is a few hundred sequential HTTP requests, so the result
-# is cached in `data/` and the download is skipped when the file already
+# is cached in `data/cleaned/` and the download is skipped when the file already
 # exists. Pass `--force` to refetch.
 #
 # Usage:
@@ -29,7 +29,10 @@
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using CSV, DataFrames, Downloads, Printf, Statistics
 
-const DATA_DIR = joinpath(@__DIR__, "..", "data")
+# The national municipality lookup is a download cache, kept in data/raw/ (not
+# committed); the state dataset and polygon mesh go to data/cleaned/.
+const RAW_DIR  = joinpath(@__DIR__, "..", "data", "raw")
+const DATA_DIR = joinpath(@__DIR__, "..", "data", "cleaned")
 
 const MUNICIPIOS_URL =
     "https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/csv/municipios.csv"
@@ -97,11 +100,12 @@ end
     municipality_table(uf; force=false) -> DataFrame
 
 Centroids and names for every municipality in state `uf`, columns
-`geocode, name, lat, lon`. The national CSV is cached in `data/`.
+`geocode, name, lat, lon`. The national CSV is cached in `data/raw/`.
 """
 function municipality_table(uf::Int; force::Bool = false)
-    path = joinpath(DATA_DIR, "municipios_brasileiros.csv")
+    path = joinpath(RAW_DIR, "municipios_brasileiros.csv")
     if force || !isfile(path)
+        mkpath(RAW_DIR)
         println("Downloading municipality centroids...")
         Downloads.download(MUNICIPIOS_URL, path)
     end

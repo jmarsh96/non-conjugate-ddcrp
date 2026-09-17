@@ -60,7 +60,7 @@ cat(sprintf("Loaded %d municipalities in %d clusters.\n",
 # Geometry: IBGE municipal boundaries when available, otherwise centroids only.
 # ---------------------------------------------------------------------------
 
-uf_files <- list.files(file.path(repo, "data"), pattern = "^malha_uf[0-9]+\\.geojson$",
+uf_files <- list.files(file.path(repo, "data", "cleaned"), pattern = "^malha_uf[0-9]+\\.geojson$",
                        full.names = TRUE)
 polys <- NULL
 if (length(uf_files) > 0) {

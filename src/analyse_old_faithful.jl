@@ -10,7 +10,7 @@ mkpath(FIGDIR)
 # ── Load data ─────────────────────────────────────────────────────────────────
 
 println("Loading Old Faithful data...")
-faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "faithful.csv")))
+faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "cleaned", "faithful.csv")))
 y = Float64.(faithful.eruptions)
 w = Float64.(faithful.waiting)
 n = length(y)

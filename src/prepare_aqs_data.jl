@@ -36,7 +36,10 @@
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using CSV, DataFrames, Downloads, Statistics, StatsBase, Printf
 
-const DATA_DIR = joinpath(@__DIR__, "..", "data")
+# Downloads (the 305 MB daily file, the Census zip) go to data/raw/, which is
+# not committed; what the run and map scripts read goes to data/cleaned/.
+const RAW_DIR  = joinpath(@__DIR__, "..", "data", "raw")
+const DATA_DIR = joinpath(@__DIR__, "..", "data", "cleaned")
 
 # Non-contiguous states and territories, excluded from every region so that
 # great-circle distances describe one connected land mass.
@@ -77,10 +80,10 @@ Path to the extracted daily summary CSV, downloading and unzipping it on first
 use. The archive is ~10 MB compressed and ~320 MB extracted, so both are cached.
 """
 function daily_file(year::Int; force::Bool = false)
-    csv = joinpath(DATA_DIR, "daily_88101_$(year).csv")
+    csv = joinpath(RAW_DIR, "daily_88101_$(year).csv")
     (!force && isfile(csv)) && return csv
 
-    zipf = joinpath(DATA_DIR, "daily_88101_$(year).zip")
+    zipf = joinpath(RAW_DIR, "daily_88101_$(year).zip")
     if force || !isfile(zipf)
         url = "https://aqs.epa.gov/aqsweb/airdata/daily_88101_$(year).zip"
         println("Downloading $url ...")
@@ -88,7 +91,7 @@ function daily_file(year::Int; force::Bool = false)
         @printf("  %.1f MB\n", filesize(zipf) / 1e6)
     end
     println("Extracting...")
-    run(`unzip -o -q $zipf -d $DATA_DIR`)
+    run(`unzip -o -q $zipf -d $RAW_DIR`)
     isfile(csv) || error("expected $csv inside the archive")
     return csv
 end
@@ -100,10 +103,11 @@ Cache the Census cartographic-boundary shapefile of US states, used only by
 `src/map_aqs.R`. Failure here is non-fatal for the MCMC pipeline.
 """
 function state_boundaries(; force::Bool = false)
-    zipf = joinpath(DATA_DIR, "cb_2023_us_state_20m.zip")
+    zipf = joinpath(RAW_DIR, "cb_2023_us_state_20m.zip")
     shp  = joinpath(DATA_DIR, "cb_2023_us_state_20m", "cb_2023_us_state_20m.shp")
     (!force && isfile(shp)) && (println("State boundaries already cached."); return shp)
     try
+        mkpath(RAW_DIR); mkpath(DATA_DIR)
         println("Downloading US state boundaries...")
         Downloads.download("https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_20m.zip",
                            zipf; timeout = 300)
@@ -189,7 +193,7 @@ end
 
 function main(args)
     opts = parse_args(args)
-    mkpath(DATA_DIR)
+    mkpath(DATA_DIR); mkpath(RAW_DIR)
 
     outfile = joinpath(DATA_DIR, "aqs_pm25_$(opts.year)_$(opts.region).csv")
     if isfile(outfile) && !opts.force
