@@ -83,6 +83,7 @@ end
     using DistanceDependentCRP, Statistics, StatsBase, Distributions, JLD2, Random
     include(joinpath(@__DIR__, "negbin_population_model.jl"))
     include(joinpath(@__DIR__, "model_comparison.jl"))
+    include(joinpath(@__DIR__, "dengue_common.jl"))
 end
 
 # ============================================================================
@@ -118,104 +119,10 @@ const FAM_r = :lnmm
     NegBinPopulationRatesSamples(s.c[keep, :], s.ρ[keep, :], s.r[keep, :],
                                  s.logpost[keep], s.α_ddcrp[keep], s.s_ddcrp[keep])
 
-# ============================================================================
-# Point estimates and agreement
-#
-# Lifted from analyse_dengue.jl (`dahl_point_estimate`, `ari`) and
-# dengue_mode_map.jl (the MAP-at-mode partition) so the whole study runs on the
-# workers in one pass, rather than needing a second script to re-open 19 chains.
-# ============================================================================
-
-#     dahl_point_estimate(c_samples, sim; max_draws=2000) -> Vector{Int}
-#
-# Least-squares (Dahl 2006) point estimate: the sampled partition whose own
-# co-clustering matrix is closest to the posterior similarity matrix.
-@everywhere function dahl_point_estimate(c_samples::Matrix{Int}, sim::Matrix{Float64};
-                                         max_draws::Int = 2000)
-    S = size(c_samples, 1)
-    cand = S <= max_draws ? (1:S) : round.(Int, range(1, S; length = max_draws))
-    best, best_loss = first(cand), Inf
-    for s in cand
-        z = compute_table_assignments(c_samples[s, :])
-        loss = 0.0
-        @inbounds for i in 1:length(z), j in (i+1):length(z)
-            loss += ((z[i] == z[j] ? 1.0 : 0.0) - sim[i, j])^2
-        end
-        loss < best_loss && (best_loss = loss; best = s)
-    end
-    return compute_table_assignments(c_samples[best, :])
-end
-
-#     mode_point_estimate(c_samples, logpost) -> Vector{Int}
-#
-# MAP-at-mode partition: the highest log-posterior draw among those whose cluster
-# count equals the posterior mode of K. Preferred over Dahl for the maps, which
-# over-fragments here (K ≈ 82, about 40 singletons) because the co-clustering
-# signal is weak; this summary's K matches the K that gets reported.
-@everywhere function mode_point_estimate(c_samples::Matrix{Int}, logpost::Vector)
-    z_all = [compute_table_assignments(c_samples[i, :]) for i in axes(c_samples, 1)]
-    Kt = [maximum(z) for z in z_all]
-    cand = findall(==(mode(Kt)), Kt)
-    return z_all[cand[argmax(logpost[cand])]]
-end
-
-#     ari(a, b) -> Float64
-#
-# Adjusted Rand index between two label vectors.
-@everywhere function ari(a::Vector{Int}, b::Vector{Int})
-    n = length(a)
-    tab = Dict{Tuple{Int,Int},Int}()
-    for i in 1:n
-        tab[(a[i], b[i])] = get(tab, (a[i], b[i]), 0) + 1
-    end
-    ai = countmap(a); bj = countmap(b)
-    c2(x) = x * (x - 1) / 2
-    sij = sum(c2(v) for v in values(tab))
-    sa  = sum(c2(v) for v in values(ai))
-    sb  = sum(c2(v) for v in values(bj))
-    exp_idx = sa * sb / c2(n)
-    max_idx = (sa + sb) / 2
-    return (sij - exp_idx) / (max_idx - exp_idx)
-end
-
-# ============================================================================
-# Posterior predictive discrepancy statistics
-#
-# The first four are the ones analyse_dengue.jl already uses, so the numbers
-# here can be read against that analysis. The fifth is specific to this study:
-# Moran's I on the contiguity graph asks whether the fitted clustering
-# reproduces the SPATIAL autocorrelation in the data, which is precisely what
-# varying the ddCRP distance metric is supposed to change.
-# ============================================================================
-
-#     moran_I(v, nbrs) -> Float64
-#
-# Moran's I of `v` over the neighbour lists `nbrs`, with binary contiguity
-# weights. Near 0 means no spatial autocorrelation; near 1 means strong positive
-# autocorrelation.
-@everywhere function moran_I(v::AbstractVector{<:Real}, nbrs::Vector{Vector{Int}})
-    n = length(v)
-    v̄ = mean(v)
-    dev = v .- v̄
-    num = 0.0; W = 0
-    @inbounds for i in 1:n, j in nbrs[i]
-        num += dev[i] * dev[j]
-        W += 1
-    end
-    den = sum(abs2, dev)
-    return (den == 0 || W == 0) ? NaN : (n / W) * (num / den)
-end
-
-@everywhere function ppc_statistics(E, nbrs)
-    loginc(v) = log.((v .+ 0.5) ./ E)
-    return [
-        "dispersion index Var/Mean"    => v -> var(v) / mean(v),
-        "maximum count"                => v -> float(maximum(v)),
-        "n municipalities < 100/100k"  => v -> float(count(i -> v[i] / E[i] < 100, eachindex(v))),
-        "90th pct of incidence"        => v -> quantile(v ./ E, 0.9),
-        "Moran's I of log incidence"   => v -> moran_I(loginc(v), nbrs),
-    ]
-end
+# Point estimates (`dahl_point_estimate`, `mode_point_estimate`, `ari`) and the
+# posterior predictive statistics (`moran_I`, `ppc_statistics`) live in
+# dengue_common.jl, shared with run_dengue.jl and analyse_dengue.jl, so the
+# whole study still runs on the workers in one pass.
 
 # ============================================================================
 # Unit of work
@@ -414,48 +321,8 @@ isfile(ADJ_FILE) || error("""
     Missing $ADJ_FILE
     Run: Rscript src/prepare_dengue_adjacency.R --uf $UF""")
 
-const IDX = Dict(g => i for (i, g) in enumerate(Int.(DF.geocode)))
-
-function load_adjacency(path)
-    e = CSV.read(path, DataFrame)
-    A = zeros(Float64, N, N)
-    for row in eachrow(e)
-        i = get(IDX, Int(row.geocode_i), 0); j = get(IDX, Int(row.geocode_j), 0)
-        (i == 0 || j == 0) && continue
-        A[i, j] = 1.0; A[j, i] = 1.0
-    end
-    return A
-end
-
-const A_ADJ = load_adjacency(ADJ_FILE)
-const NBRS  = [findall(!iszero, view(A_ADJ, i, :)) for i in 1:N]
-
-"""
-    hop_distances(nbrs) -> Matrix{Float64}
-
-All-pairs shortest-path distance in edges, by breadth-first search from every
-node. `typemax` marks unreachable pairs, which should not occur: the adjacency
-script bridges any disconnected component before writing the edge list.
-"""
-function hop_distances(nbrs::Vector{Vector{Int}})
-    n = length(nbrs)
-    H = fill(Inf, n, n)
-    queue = Vector{Int}(undef, n)
-    for src in 1:n
-        H[src, src] = 0.0
-        head = 1; tail = 1; queue[1] = src
-        while head <= tail
-            u = queue[head]; head += 1
-            for v in nbrs[u]
-                if isinf(H[src, v])
-                    H[src, v] = H[src, u] + 1.0
-                    tail += 1; queue[tail] = v
-                end
-            end
-        end
-    end
-    return H
-end
+const A_ADJ = load_adjacency(ADJ_FILE, Int.(DF.geocode))
+const NBRS  = neighbour_lists(A_ADJ)
 
 const H_HOP = hop_distances(NBRS)
 any(isinf, H_HOP) && error("contiguity graph is disconnected; rebuild the edge list")
@@ -471,19 +338,13 @@ const G_COMM = exp(Matrix(A_ADJ))
 # ============================================================================
 # Distance metrics
 #
-# Every metric is rescaled by its own median off-diagonal entry, exactly as
-# run_dengue.jl rescales the great-circle distances, so a given s means the
+# Every metric is rescaled by its own median off-diagonal entry (the great-
+# circle distances by the median pairwise distance), so a given s means the
 # same "decay per median separation" under all of them.
 #
-# TRUNCATION WITHOUT -Inf. `precompute_log_ddcrp` takes log(f(d)), so a link
-# weight of exactly zero puts -Inf into the log-posterior and NaN into the MH
-# ratio. The hop windows therefore use a soft floor: every pair within s hops
-# sits at distance 0 (weight 1, the same for all of them) and every pair beyond
-# it at LOG_FLOOR, which under kernel rate 1 is e^-30 times weaker. The window
-# is effectively hard while every log-weight stays finite.
+# The hop windows use a soft floor rather than a hard zero; see `hop_window_D`
+# and LOG_FLOOR in dengue_common.jl.
 # ============================================================================
-
-const LOG_FLOOR = 30.0
 
 rescale(D) = (m = median(D[i, j] for i in 1:N for j in 1:N if i != j); (D ./ m, m))
 
@@ -526,8 +387,7 @@ function build_D(metric::String, s::Float64)
     metric == "hop" || error("unknown metric $metric")
     (isinteger(s) && s >= 1) || error("hop window radius must be a positive integer, got $s")
     r = Int(s)
-    D = [H_HOP[i, j] <= r ? 0.0 : LOG_FLOOR for i in 1:N, j in 1:N]
-    return (D, 1.0, r)
+    return (hop_window_D(H_HOP, r), 1.0, r)
 end
 
 const METRIC_DESC = Dict(

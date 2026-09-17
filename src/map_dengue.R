@@ -1,18 +1,20 @@
 # ============================================================================
 # map_dengue.R
 #
-# Spatial maps for the Brazil dengue application. Run AFTER
-# src/analyse_dengue.jl, which writes `cluster_assignments.csv`.
+# Spatial maps for the Brazil dengue application, as reported in the paper.
+# Run AFTER src/analyse_dengue.jl, which writes `cluster_assignments.csv` (the
+# mode partition of the selected sampler).
 #
 # Spatial work in this project uses R + sf (not Julia, not geopandas), so the
 # maps live here rather than in the analyse script.
 #
-# Produces, in results/real_data/dengue/figures/:
-#   map_clusters.png     point-estimate clustering, municipalities coloured by
-#                        cluster and annotated with cluster-level incidence
-#   map_uncertainty.png  how confidently each municipality is placed (mean
-#                        posterior co-clustering probability with its cluster)
-#   map_incidence.png    the raw 2024 incidence, for comparison
+# Produces, in results/real_data/dengue_hop/figures/ (dengue_hop_test/ under
+# --test), and copies to docs/paper/figures/ unless --test:
+#   dengue_maps.png             observed incidence | fitted cluster incidence,
+#                               on one shared colour scale, with the mode
+#                               partition drawn as cluster boundaries
+#   dengue_map_uncertainty.png  mean posterior co-clustering probability of
+#                               each municipality with its own cluster
 #
 # Usage:
 #   Rscript src/map_dengue.R
@@ -43,7 +45,7 @@ repo <- if (length(script_path) == 1) {
 if (!dir.exists(file.path(repo, "src"))) repo <- normalizePath(".")
 
 outdir <- file.path(repo, "results", "real_data",
-                    if (is_test) "dengue_test" else "dengue")
+                    if (is_test) "dengue_hop_test" else "dengue_hop")
 figdir <- file.path(outdir, "figures")
 dir.create(figdir, recursive = TRUE, showWarnings = FALSE)
 
@@ -53,6 +55,7 @@ if (!file.exists(assign_file)) {
 }
 cl <- read.csv(assign_file)
 cl$cluster <- factor(cl$cluster)
+cl$log_incidence <- log10(pmax(cl$incidence, 1))
 cat(sprintf("Loaded %d municipalities in %d clusters.\n",
             nrow(cl), nlevels(cl$cluster)))
 
@@ -76,68 +79,86 @@ if (length(uf_files) > 0) {
 if (!is.null(polys)) {
   map_df <- left_join(polys, cl, by = "geocode")
   cat(sprintf("Using municipal polygons (%d matched).\n", sum(!is.na(map_df$cluster))))
-  geom_layer <- function(fill_var)
-    geom_sf(aes(fill = .data[[fill_var]]), colour = "grey30", linewidth = 0.08)
+  fill_layer <- function(v, border = "grey30")
+    geom_sf(aes(fill = .data[[v]]), colour = border, linewidth = 0.08)
 } else {
-  message("No boundary mesh — falling back to centroid points.")
+  message("No boundary mesh; falling back to centroid points.")
   map_df <- st_as_sf(cl, coords = c("lon", "lat"), crs = 4326)
-  geom_layer <- function(fill_var)
-    geom_sf(aes(colour = .data[[fill_var]]), size = 1.6)
+  fill_layer <- function(v, border = NA) geom_sf(aes(colour = .data[[v]]), size = 1.6)
 }
 
-base_theme <- theme_minimal(base_size = 11) +
+base_theme <- theme_minimal(base_size = 13) +
   theme(axis.text = element_blank(), axis.title = element_blank(),
-        panel.grid = element_blank())
+        panel.grid = element_blank(), legend.position = "bottom",
+        legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.35, "cm"),
+        plot.title = element_text(size = 13, hjust = 0.5))
 
 # ---------------------------------------------------------------------------
-# 1. Point-estimate clustering
+# 1. Observed and fitted incidence, on one shared scale
+#
+# With tens of clusters a discrete palette is unreadable, so the cluster map is
+# filled by each cluster's fitted incidence on exactly the scale used for the
+# observed map, and the partition is drawn as white boundaries. The two panels
+# then compare directly.
 # ---------------------------------------------------------------------------
 
-# Order clusters by their fitted incidence so the palette reads low → high
-# rather than in arbitrary label order.
 ord <- cl %>% group_by(cluster) %>%
   summarise(rho = median(rho_mean, na.rm = TRUE), n = n(), .groups = "drop") %>%
   arrange(rho)
-map_df$cluster <- factor(map_df$cluster, levels = as.character(ord$cluster))
+map_df$log_rho <- log10(ord$rho[match(map_df$cluster, ord$cluster)])
+lims <- range(c(map_df$log_incidence, map_df$log_rho), na.rm = TRUE)
 
-p1 <- ggplot(map_df) + geom_layer("cluster") +
-  scale_fill_viridis_d(option = "turbo", na.value = "white", name = "cluster") +
-  scale_colour_viridis_d(option = "turbo", na.value = "white", name = "cluster") +
-  labs(title = "ddCRP point-estimate clustering of 2024 dengue incidence",
-       subtitle = sprintf("%d municipalities, %d clusters; Negative Binomial likelihood",
-                          nrow(cl), nlevels(cl$cluster))) +
-  base_theme
-ggsave(file.path(figdir, "map_clusters.png"), p1, width = 9, height = 8, dpi = 150)
+inc_scale <- list(
+  scale_fill_viridis_c(option = "inferno", na.value = "white", limits = lims,
+                       name = expression(log[10]~"cases per 100,000")),
+  scale_colour_viridis_c(option = "inferno", na.value = "white", limits = lims,
+                         name = expression(log[10]~"cases per 100,000")))
+
+p_obs <- ggplot(map_df) + fill_layer("log_incidence") + inc_scale +
+  labs(title = "Observed incidence") + base_theme
+
+p_fit <- ggplot(map_df) + fill_layer("log_rho", border = NA) + inc_scale +
+  labs(title = "Fitted cluster incidence (mode partition)")
+if (!is.null(polys)) {
+  bounds <- map_df %>% filter(!is.na(cluster)) %>% group_by(cluster) %>%
+    summarise(.groups = "drop")
+  p_fit <- p_fit + geom_sf(data = bounds, fill = NA, colour = "white", linewidth = 0.35)
+}
+p_fit <- p_fit + base_theme
+
+# Side by side without an extra layout package: draw both panels into one
+# device with grid viewports. A shared legend would need patchwork, which is
+# not assumed installed, so each panel keeps its own (identical) legend.
+maps_file <- file.path(figdir, "dengue_maps.png")
+png(maps_file, width = 13, height = 6, units = "in", res = 200, bg = "white")
+grid::grid.newpage()
+grid::pushViewport(grid::viewport(layout = grid::grid.layout(1, 2)))
+print(p_obs, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(p_fit, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 2))
+invisible(dev.off())
 
 # ---------------------------------------------------------------------------
 # 2. Clustering uncertainty
 # ---------------------------------------------------------------------------
 
-p2 <- ggplot(map_df) + geom_layer("cocluster_confidence") +
+p_unc <- ggplot(map_df) + fill_layer("cocluster_confidence") +
   scale_fill_viridis_c(option = "magma", limits = c(0, 1), na.value = "white",
-                       name = "co-clustering\nprobability") +
+                       name = "co-clustering probability",
+                       guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
   scale_colour_viridis_c(option = "magma", limits = c(0, 1), na.value = "white",
-                         name = "co-clustering\nprobability") +
-  labs(title = "Posterior clustering uncertainty",
-       subtitle = "Mean posterior co-clustering probability with own cluster; low = unstable placement") +
+                         name = "co-clustering probability",
+                       guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
   base_theme
-ggsave(file.path(figdir, "map_uncertainty.png"), p2, width = 9, height = 8, dpi = 150)
-
-# ---------------------------------------------------------------------------
-# 3. Raw incidence, for comparison with the fitted clusters
-# ---------------------------------------------------------------------------
-
-map_df$log_incidence <- log10(pmax(map_df$incidence, 1))
-p3 <- ggplot(map_df) + geom_layer("log_incidence") +
-  scale_fill_viridis_c(option = "inferno", na.value = "white",
-                       name = expression(log[10]~"incidence/100k")) +
-  scale_colour_viridis_c(option = "inferno", na.value = "white",
-                         name = expression(log[10]~"incidence/100k")) +
-  labs(title = "Observed 2024 dengue incidence",
-       subtitle = "Cases per 100,000 inhabitants") +
-  base_theme
-ggsave(file.path(figdir, "map_incidence.png"), p3, width = 9, height = 8, dpi = 150)
+unc_file <- file.path(figdir, "dengue_map_uncertainty.png")
+ggsave(unc_file, p_unc, width = 6.5, height = 6, dpi = 200, bg = "white")
 
 cat("\nCluster summary (ordered by fitted incidence):\n")
 print(as.data.frame(ord %>% mutate(rho = round(rho, 1))))
-cat("\nMaps written to ", figdir, "\n", sep = "")
+
+if (is_test) {
+  cat("\n--test: maps left in ", figdir, " (docs/paper/ untouched)\n", sep = "")
+} else {
+  paper_figs <- file.path(repo, "docs", "paper", "figures")
+  file.copy(c(maps_file, unc_file), paper_figs, overwrite = TRUE)
+  cat("\nMaps written to ", figdir, " and copied to ", paper_figs, "\n", sep = "")
+}

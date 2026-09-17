@@ -1,22 +1,20 @@
 # ============================================================================
 # analyse_dengue.jl
 #
-# Figures, tables and model comparison for the Brazil dengue application.
-# Run AFTER `src/run_dengue.jl`; it reads the chains that script wrote and
-# warns-and-skips anything missing.
+# Figures, tables and summary numbers for the Brazil dengue application, as
+# reported in the paper. Run AFTER `src/run_dengue.jl`; it reads the final
+# chains that script wrote.
 #
-# Answers the three questions the application has to answer:
-#   1. Does the ddCRP find MULTIPLE clusters?      → posterior of K, maps
-#   2. Do they MIX?                                → ESS, traces, ESJD
-#   3. Is the RJMCMC DOING ITS JOB?                → birth/death acceptance,
-#                                                    agreement across proposal
-#                                                    families and with the
-#                                                    conjugate Gibbs anchor
-# plus: is the non-conjugate NB actually NEEDED?   → WAIC / LPML / PSIS-LOO
-#       are the clusters real structure?           → posterior predictive checks
+# Writes to results/real_data/dengue_hop/ (dengue_hop_test/ under --test):
+#   figures/dengue_k_traces.png   P(K) for both seeds, traces of K and α_ddcrp
+#   figures/dengue_ppc.png        posterior predictive checks, NB and Poisson
+#   table_dengue.tex              mixing of the selected sampler, both seeds
+#   dengue_numbers.tex            \newcommand macros for every number the
+#                                 paper quotes, so the text updates with a rerun
+#   model_comparison.csv          WAIC / LPML / PSIS-LOO, NB vs Poisson
+#   ppc_stats.csv, cluster_assignments.csv (input to src/map_dengue.R)
 #
-# Also writes `cluster_assignments.csv` and `similarity_matrix.jld2`, which
-# `src/map_dengue.R` turns into maps.
+# and, unless --test, copies the paper assets into docs/paper/{figures,tables}/.
 #
 # Usage:
 #   julia --project=. src/analyse_dengue.jl
@@ -28,19 +26,36 @@ using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase,
       JLD2, Printf, Distributions, Random
 
 # Brings the NegBinPopulationRates* types into scope so JLD2 deserialises the
-# saved chains as their real types (needed for samples.ρ / samples.r access).
+# saved chains as their real types.
 include(joinpath(@__DIR__, "negbin_population_model.jl"))
 include(joinpath(@__DIR__, "model_comparison.jl"))
+include(joinpath(@__DIR__, "dengue_common.jl"))
 
 ENV["GKSwstype"] = "nul"   # headless GR
 
 const IS_TEST = "--test" in ARGS
 const OUTDIR = IS_TEST ?
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue_test") :
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue")
+    joinpath(@__DIR__, "..", "results", "real_data", "dengue_hop_test") :
+    joinpath(@__DIR__, "..", "results", "real_data", "dengue_hop")
 const FIGDIR = joinpath(OUTDIR, "figures"); mkpath(FIGDIR)
+const PAPER = joinpath(@__DIR__, "..", "docs", "paper")
 
-latex_fmt(x::Real, d::Int) = Printf.format(Printf.Format("%.$(d)f"), Float64(x))
+fmt(x::Real, d::Int) = Printf.format(Printf.Format("%.$(d)f"), Float64(x))
+# Thousands separator in LaTeX's {,} form, for counts quoted in the text.
+function fmtint(x::Real)
+    s = string(round(Int, x))
+    parts = String[]
+    while length(s) > 3
+        pushfirst!(parts, s[end-2:end]); s = s[1:end-3]
+    end
+    pushfirst!(parts, s)
+    return join(parts, "{,}")
+end
+
+# Prose names, as they read in "uses the ... proposal for ρ_k".
+const FAMILY_NAME = Dict("prior" => "prior", "nmm" => "truncated-normal moment-matched",
+                         "lnmm" => "log-normal moment-matched",
+                         "ig" => "inverse-gamma moment-matched")
 
 # ============================================================================
 # Load run outputs
@@ -55,328 +70,314 @@ meta = load(META_FILE)
 const Y = meta["y"]; const E = meta["E"]; const D = meta["D"]
 const LAT = meta["lat"]; const LON = meta["lon"]
 const GEOCODE = meta["geocode"]; const NAME = meta["name"]
-const BURN = meta["burn"]; const THIN = meta["thin"]
 const DATA = CountDataWithPopulation(Y, E, D)
 const N = length(Y)
+const NBRS = neighbour_lists(meta["adjacency"])
 
-const FINAL_CSV = joinpath(OUTDIR, "summary_final.csv")
-isfile(FINAL_CSV) || error("Missing $FINAL_CSV")
-final_df = DataFrame(CSV.File(FINAL_CSV))
+final_df = DataFrame(CSV.File(joinpath(OUTDIR, "summary_final.csv")))
+sweep_df = DataFrame(CSV.File(joinpath(OUTDIR, "summary_sweep.csv")))
+tune_file = joinpath(OUTDIR, "summary_tune.csv")
+tune_df = isfile(tune_file) ? DataFrame(CSV.File(tune_file)) : nothing
 
-chain_dir = joinpath(OUTDIR, "chains")
 chains = Dict{String,Any}()
 for (label, fname) in zip(meta["labels"], meta["chain_files"])
-    path = joinpath(chain_dir, fname)
+    path = joinpath(OUTDIR, "chains", fname)
     if isfile(path)
-        d = load(path)
-        chains[label] = (samples = d["samples"], burn = d["burn"], thin = d["thin"])
+        chains[label] = load(path)["samples"]
     else
-        @warn "Chain file not found — skipping" label path
+        @warn "Chain file not found; skipping" label path
     end
 end
-isempty(chains) && error("No chain files found in $chain_dir")
 
-labels = [l for l in meta["labels"] if haskey(chains, l)]
-keep_idx(ch) = (ch.burn + 1):ch.thin:size(ch.samples.c, 1)
-post_c(ch) = ch.samples.c[keep_idx(ch), :]
+const BEST = meta["best_label"]
+const SEED2 = BEST * " (seed 2)"
+const POIS = only(l for l in meta["labels"] if startswith(l, "Poisson"))
+haskey(chains, BEST) || error("Selected chain $BEST not found")
+nb_labels = [l for l in (BEST, SEED2) if haskey(chains, l)]
 
-println("Loaded $(length(labels)) chains over $N municipalities.\n")
+println("Loaded $(length(chains)) chains over $N municipalities; selected sampler: $BEST\n")
 
 # ============================================================================
-# Figure 1 — the data itself
+# Figure: posterior of K and traces
 # ============================================================================
 
-println("Generating data overview...")
+println("Generating P(K) and traces...")
+const SEED_COLOURS = [:steelblue, :darkorange]
 let
-    inc = Y ./ E
-    p1 = scatter(LON, LAT; marker_z = log10.(inc), c = :viridis, ms = 4,
-                 msw = 0, colorbar_title = "log₁₀ incidence /100k",
-                 xlabel = "longitude", ylabel = "latitude",
-                 title = "2024 dengue incidence by municipality", legend = false)
-    p2 = histogram(log10.(inc); bins = 40, xlabel = "log₁₀ incidence per 100k",
-                   ylabel = "municipalities", legend = false,
-                   title = "Incidence is multi-modal")
-    p3 = scatter(E .* 1e5, inc; xscale = :log10, yscale = :log10, ms = 3, msw = 0,
-                 xlabel = "population", ylabel = "incidence per 100k", legend = false,
-                 title = "Incidence vs population")
-    plot(p1, p2, p3; layout = (1, 3), size = (1500, 430), left_margin = 6Plots.mm,
-         bottom_margin = 6Plots.mm)
-    savefig(joinpath(FIGDIR, "data_overview.png"))
-end
-
-# ============================================================================
-# Figure 2 — posterior of K: are there multiple clusters?
-# ============================================================================
-
-println("Generating P(K) distribution...")
-let
-    plt = plot(; xlabel = "number of clusters K", ylabel = "posterior probability",
-                 title = "Posterior of K", size = (900, 500), legend = :topright)
-    for l in labels
-        kt = calculate_n_clusters(post_c(chains[l]))
-        cm = countmap(kt)
-        ks = sort(collect(keys(cm)))
-        plot!(plt, ks, [cm[k] / length(kt) for k in ks]; lw = 2, marker = :circle,
-              ms = 3, label = l)
+    kt = Dict(l => calculate_n_clusters(chains[l].c) for l in nb_labels)
+    allK = sort(unique(vcat(values(kt)...)))
+    probs = hcat([[count(==(k), kt[l]) / length(kt[l]) for k in allK] for l in nb_labels]...)
+    p1 = groupedbar(allK, probs; bar_width = 0.8, lw = 0,
+                    label = permutedims(["seed 1", "seed 2"][1:length(nb_labels)]),
+                    color = permutedims(SEED_COLOURS[1:length(nb_labels)]),
+                    xlabel = "number of clusters K", ylabel = "posterior probability",
+                    legend = :topright)
+    p2 = plot(; xlabel = "iteration (thinned)", ylabel = "K", legend = false)
+    p3 = plot(; xlabel = "iteration (thinned)", ylabel = "α (ddCRP)", legend = false)
+    for (i, l) in enumerate(nb_labels)
+        plot!(p2, kt[l]; lw = 0.5, color = SEED_COLOURS[i], alpha = 0.8)
+        plot!(p3, chains[l].α_ddcrp; lw = 0.5, color = SEED_COLOURS[i], alpha = 0.8)
     end
-    savefig(plt, joinpath(FIGDIR, "pk_distribution.png"))
+    plot(p1, plot(p2, p3; layout = (2, 1)); layout = (1, 2), size = (1500, 550),
+         left_margin = 6Plots.mm, bottom_margin = 6Plots.mm,
+         guidefontsize = 12, tickfontsize = 10, legendfontsize = 11)
+    savefig(joinpath(FIGDIR, "dengue_k_traces.png"))
 end
 
 # ============================================================================
-# Figure 3 — traces: does it mix?
+# Point estimates and agreement between seeds
 # ============================================================================
 
-println("Generating trace plots...")
-let
-    ps = []
-    for l in labels
-        ch = chains[l]
-        kt = calculate_n_clusters(post_c(ch))
-        push!(ps, plot(kt; lw = 0.6, legend = false, ylabel = "K", title = l,
-                       titlefontsize = 8))
-    end
-    ch1 = chains[labels[1]]
-    idx = keep_idx(ch1)
-    push!(ps, plot(ch1.samples.α_ddcrp[idx]; lw = 0.6, legend = false,
-                   ylabel = "α_ddcrp", title = "α_ddcrp ($(labels[1]))", titlefontsize = 8))
-    push!(ps, plot(ch1.samples.logpost[idx]; lw = 0.6, legend = false,
-                   ylabel = "log posterior", title = "log posterior", titlefontsize = 8))
-    plot(ps...; layout = (length(ps), 1), size = (1000, 220 * length(ps)),
-         left_margin = 8Plots.mm)
-    savefig(joinpath(FIGDIR, "k_alpha_traces.png"))
-end
+println("Computing point estimates...")
+sims = Dict(l => compute_similarity_matrix(chains[l].c) for l in nb_labels)
+modes = Dict(l => mode_point_estimate(chains[l].c, chains[l].logpost) for l in nb_labels)
+seed_ari = length(nb_labels) == 2 ? ari(modes[BEST], modes[SEED2]) : NaN
+# Agreement of the full posteriors, not just the point estimates: the mean
+# absolute difference between the two seeds' co-clustering probabilities.
+seed_sim_mad = length(nb_labels) == 2 ? mean(abs.(sims[BEST] .- sims[SEED2])) : NaN
+@printf("  seed agreement: ARI of mode partitions %.3f, mean |Δ co-clustering| %.4f\n",
+        seed_ari, seed_sim_mad)
 
 # ============================================================================
-# Cross-variant agreement — the correctness check, there being no ground truth
-# ============================================================================
-
-"""
-    dahl_point_estimate(c_samples, sim) -> Vector{Int}
-
-Least-squares (Dahl 2006) point estimate: the sampled partition whose own
-co-clustering matrix is closest to the posterior similarity matrix. Preferred
-over `:MAP` here because with n in the hundreds every draw is a distinct
-configuration, so the modal configuration is not meaningful.
-"""
-function dahl_point_estimate(c_samples::Matrix{Int}, sim::Matrix{Float64};
-                             max_draws::Int = 2000)
-    S = size(c_samples, 1)
-    # The search is O(draws x n^2); capping the candidate set keeps it seconds
-    # rather than minutes on a full-length chain, with no practical loss since
-    # any of thousands of draws is an adequate candidate partition.
-    cand = S <= max_draws ? (1:S) : round.(Int, range(1, S; length = max_draws))
-    best, best_loss = first(cand), Inf
-    for s in cand
-        z = compute_table_assignments(c_samples[s, :])
-        loss = 0.0
-        @inbounds for i in 1:length(z), j in (i+1):length(z)
-            loss += ((z[i] == z[j] ? 1.0 : 0.0) - sim[i, j])^2
-        end
-        loss < best_loss && (best_loss = loss; best = s)
-    end
-    return compute_table_assignments(c_samples[best, :])
-end
-
-println("Computing point estimates and cross-variant agreement...")
-sims = Dict(l => compute_similarity_matrix(post_c(chains[l])) for l in labels)
-points = Dict(l => dahl_point_estimate(post_c(chains[l]), sims[l]) for l in labels)
-
-# ARI between every pair of point estimates. High agreement between independent
-# proposal families (and with the conjugate Gibbs anchor) is what stands in for
-# a ground-truth check on real data.
-function ari(a::Vector{Int}, b::Vector{Int})
-    n = length(a)
-    tab = Dict{Tuple{Int,Int},Int}()
-    for i in 1:n
-        tab[(a[i], b[i])] = get(tab, (a[i], b[i]), 0) + 1
-    end
-    ai = countmap(a); bj = countmap(b)
-    c2(x) = x * (x - 1) / 2
-    sij = sum(c2(v) for v in values(tab))
-    sa = sum(c2(v) for v in values(ai))
-    sb = sum(c2(v) for v in values(bj))
-    exp_idx = sa * sb / c2(n)
-    max_idx = (sa + sb) / 2
-    return (sij - exp_idx) / (max_idx - exp_idx)
-end
-
-ari_mat = [ari(points[a], points[b]) for a in labels, b in labels]
-println("\nPairwise ARI between point-estimate clusterings:")
-println(rpad("", 42) * join([rpad(string(i), 8) for i in 1:length(labels)]))
-for (i, l) in enumerate(labels)
-    @printf("%2d %-39s%s\n", i, first(l, 38),
-            join([rpad(latex_fmt(ari_mat[i, j], 3), 8) for j in 1:length(labels)]))
-end
-CSV.write(joinpath(OUTDIR, "cross_variant_ari.csv"),
-          DataFrame([Symbol("v$j") => ari_mat[:, j] for j in 1:length(labels)]...;
-                    makeunique = true))
-
-let
-    heatmap(1:length(labels), 1:length(labels), ari_mat; c = :viridis, clims = (0, 1),
-            xlabel = "variant", ylabel = "variant", title = "Agreement (ARI) between variants",
-            size = (700, 600))
-    savefig(joinpath(FIGDIR, "cross_variant_ari.png"))
-end
-
-# ============================================================================
-# Mixing / acceptance table
+# Mixing table
 # ============================================================================
 
 println("\nMixing and acceptance summary:")
-@printf("%-42s %7s %7s %8s %8s %8s %9s %9s\n",
-        "variant", "mean K", "ESS(K)", "acc.B%", "acc.D%", "acc.F%", "ESS_ρ", "ESS_r")
-println("-"^105)
+nb_rows = filter(r -> r.family == "negbin", final_df)
 for r in eachrow(final_df)
-    @printf("%-42s %7.2f %7.0f %8.2f %8.2f %8.2f %9.0f %9.0f\n",
-            first(r.label, 41), r.mean_K, r.ess_K,
-            r.acc_birth*100, r.acc_death*100, r.acc_fixed*100,
-            r.med_ess_ρ, r.med_ess_r)
+    @printf("  %-40s mean K %6.2f  mode K %3d  ESS(K) %6.0f  acc B/D/F %.2f/%.2f/%.2f%%\n",
+            first(r.label, 40), r.mean_K, r.mode_K, r.ess_K,
+            r.acc_birth*100, r.acc_death*100, r.acc_fixed*100)
 end
 
 let
-    lines = String[]
-    push!(lines, "% Required packages: booktabs")
-    push!(lines, "% Generated automatically — re-run analyse_dengue.jl to update")
-    push!(lines, "\\begin{tabular}{l r r r r r r}")
-    push!(lines, "  \\toprule")
-    push!(lines, "  Sampler & Mean \$K\$ & ESS\$(K)\$ & Birth (\\%) & Death (\\%) & " *
-                 "Fixed (\\%) & ESS/s \\\\")
-    push!(lines, "  \\midrule")
-    for r in eachrow(final_df)
-        push!(lines, "  " * replace(r.label, "_" => "\\_") * " & " *
-              latex_fmt(r.mean_K, 2) * " & " * string(round(Int, r.ess_K)) * " & " *
-              latex_fmt(r.acc_birth * 100, 2) * " & " * latex_fmt(r.acc_death * 100, 2) * " & " *
-              latex_fmt(r.acc_fixed * 100, 2) * " & " * latex_fmt(r.ess_per_sec, 3) * " \\\\")
+    lines = String[
+        "% Required packages: booktabs",
+        "% Generated by src/analyse_dengue.jl; re-run it to update.",
+        "\\begin{tabular}{l r r r r r r r r r}",
+        "  \\toprule",
+        "  Chain & Mean \$K\$ & Mode \$K\$ & ESS\$(K)\$ & ESS\$_\\rho\$ & ESS\$_r\$ & " *
+            "Birth (\\%) & Death (\\%) & Fixed (\\%) & Time (h) \\\\",
+        "  \\midrule",
+    ]
+    for (i, r) in enumerate(eachrow(nb_rows))
+        push!(lines, "  Seed $i & " * fmt(r.mean_K, 1) * " & " * string(r.mode_K) * " & " *
+              string(round(Int, r.ess_K)) * " & " * string(round(Int, r.med_ess_ρ)) * " & " *
+              string(round(Int, r.med_ess_r)) * " & " * fmt(r.acc_birth * 100, 2) * " & " *
+              fmt(r.acc_death * 100, 2) * " & " * fmt(r.acc_fixed * 100, 2) * " & " *
+              fmt(r.total_time / 3600, 1) * " \\\\")
     end
-    push!(lines, "  \\bottomrule"); push!(lines, "\\end{tabular}")
-    open(io -> println(io, join(lines, "\n")), joinpath(OUTDIR, "table_dengue_mixing.tex"), "w")
-    println("\n  LaTeX table → $(joinpath(OUTDIR, "table_dengue_mixing.tex"))")
+    push!(lines, "  \\bottomrule", "\\end{tabular}")
+    open(io -> println(io, join(lines, "\n")), joinpath(OUTDIR, "table_dengue.tex"), "w")
 end
 
 # ============================================================================
-# Model comparison — is the non-conjugate NB actually needed?
+# Model comparison: is the non-conjugate NB needed?
 # ============================================================================
 
 println("\nModel comparison (WAIC / LPML / PSIS-LOO):")
-scores = []
-for l in labels
-    ch = chains[l]
-    s = ch.samples
-    idx = keep_idx(ch)
-    if s isa NegBinPopulationRatesSamples
-        thin = NegBinPopulationRatesSamples(s.c[idx, :], s.ρ[idx, :], s.r[idx, :],
-                                            s.logpost[idx], s.α_ddcrp[idx], s.s_ddcrp[idx])
-        push!(scores, score_fit(l, loglik_matrix(NegBinPopulationRates(), thin, DATA)))
-    elseif s isa PoissonPopulationRatesSamples
-        thin = PoissonPopulationRatesSamples(s.c[idx, :], s.ρ[idx, :], s.logpost[idx],
-                                             s.α_ddcrp[idx], s.s_ddcrp[idx])
-        push!(scores, score_fit(l, loglik_matrix(PoissonPopulationRates(), thin, DATA)))
-    else
-        # PoissonPopulationRatesMarg stores no per-observation rate (λ is
-        # integrated out), so it cannot be scored here. It serves as the
-        # clustering benchmark in the ARI table above instead.
-        println("  (skipping $l — marginalised model, no pointwise likelihood)")
-    end
+scores = Any[]; pointwise = Dict{String,Any}()
+for l in vcat(nb_labels[1:1], haskey(chains, POIS) ? [POIS] : String[])
+    s = chains[l]
+    model = s isa NegBinPopulationRatesSamples ? NegBinPopulationRates() : PoissonPopulationRates()
+    sc, pw = score_fit_pointwise(l, loglik_matrix(model, s, DATA))
+    push!(scores, sc); pointwise[l] = pw
 end
-if !isempty(scores)
-    print_comparison(scores)
-    CSV.write(joinpath(OUTDIR, "model_comparison.csv"), DataFrame(scores))
-end
+print_comparison(scores)
+CSV.write(joinpath(OUTDIR, "model_comparison.csv"), DataFrame(scores))
+loo_diff = haskey(pointwise, POIS) ?
+    elpd_difference(pointwise[BEST].elpd_loo_i, pointwise[POIS].elpd_loo_i) :
+    (diff = NaN, se = NaN)
+@printf("  elpd_loo(NB) - elpd_loo(Poisson) = %.1f (SE %.1f)\n", loo_diff.diff, loo_diff.se)
 
 # ============================================================================
-# Posterior predictive checks — are the clusters reproducing the data?
+# Posterior predictive checks
 # ============================================================================
 
 println("\nPosterior predictive checks...")
+ppc_rows = DataFrame(label = String[], statistic = String[], T_obs = Float64[], ppp = Float64[],
+                     q025 = Float64[], q50 = Float64[], q975 = Float64[])
 let
-    nb_labels = [l for l in labels if chains[l].samples isa NegBinPopulationRatesSamples]
-    pois_labels = [l for l in labels if chains[l].samples isa PoissonPopulationRatesSamples]
-    isempty(nb_labels) && @warn "no Negative Binomial chain — skipping PPC"
-
-    # Discrepancy statistics chosen to probe what a Poisson model gets wrong:
-    # the spread of the counts, the extreme upper tail, and how many
-    # municipalities sit at very low incidence.
-    stats = Dict(
-        "dispersion index Var/Mean" => v -> var(v) / mean(v),
-        "maximum count"             => v -> float(maximum(v)),
-        "n municipalities < 100/100k" => v -> float(count(i -> v[i] / E[i] < 100, eachindex(v))),
-        "90th pct of incidence"     => v -> quantile(v ./ E, 0.9),
-    )
-    stat_names = collect(keys(stats))
-
+    stats = ppc_statistics(E, NBRS)
+    short = Dict("dispersion index Var/Mean" => "dispersion index",
+                 "maximum count" => "maximum count",
+                 "n municipalities < 100/100k" => "# below 100 per 100k",
+                 "90th pct of incidence" => "90th pct incidence",
+                 "Moran's I of log incidence" => "Moran's I")
     ps = []
-    for l in vcat(isempty(nb_labels) ? String[] : [nb_labels[1]],
-                  isempty(pois_labels) ? String[] : [pois_labels[1]])
-        ch = chains[l]; s = ch.samples; idx = keep_idx(ch)
-        if s isa NegBinPopulationRatesSamples
-            thin = NegBinPopulationRatesSamples(s.c[idx, :], s.ρ[idx, :], s.r[idx, :],
-                                                s.logpost[idx], s.α_ddcrp[idx], s.s_ddcrp[idx])
-            model = NegBinPopulationRates()
-        else
-            thin = PoissonPopulationRatesSamples(s.c[idx, :], s.ρ[idx, :], s.logpost[idx],
-                                                 s.α_ddcrp[idx], s.s_ddcrp[idx])
-            model = PoissonPopulationRates()
-        end
+    ppc_labels = [l for l in (BEST, POIS) if haskey(chains, l)]
+    for l in ppc_labels
+        s = chains[l]
+        model = s isa NegBinPopulationRatesSamples ? NegBinPopulationRates() : PoissonPopulationRates()
         Random.seed!(11)
-        y_rep = posterior_predictive(model, thin, DATA; n_rep = 1000)
-
-        println("  $l")
-        for sname in stat_names
-            f = stats[sname]
-            T_obs = f(Y)
-            T_rep = [f(view(y_rep, s, :)) for s in axes(y_rep, 1)]
-            p = ppc_pvalue(T_obs, T_rep)
-            @printf("    %-30s observed %12.2f   ppp = %.3f%s\n",
-                    sname, T_obs, p, (p < 0.05 || p > 0.95) ? "  ← model misfit" : "")
-            push!(ps, histogram(T_rep; bins = 40, legend = false, title = "$sname\n$l",
-                                titlefontsize = 7, xlabel = "replicate"))
-            vline!(ps[end], [T_obs]; lw = 2, c = :red)
+        y_rep = posterior_predictive(model, s, DATA; n_rep = IS_TEST ? 200 : 1000)
+        rowname = s isa NegBinPopulationRatesSamples ? "Negative binomial" : "Poisson"
+        for (j, (sname, f)) in enumerate(stats)
+            t_obs = f(Y)
+            t_rep = [f(view(y_rep, r, :)) for r in axes(y_rep, 1)]
+            p = ppc_pvalue(t_obs, t_rep)
+            push!(ppc_rows, (l, sname, t_obs, p, quantile(t_rep, 0.025),
+                             quantile(t_rep, 0.5), quantile(t_rep, 0.975)))
+            @printf("  %-22s %-30s observed %12.3f  ppp = %.3f\n", first(rowname, 22), sname, t_obs, p)
+            # A Poisson replicate can sit orders of magnitude from the data, so
+            # the axis always spans both the replicates and the observed value.
+            lo, hi = extrema(vcat(t_rep, t_obs)); pad = 0.05 * (hi - lo + eps())
+            h = histogram(t_rep; bins = 30, color = :grey70, lw = 0, legend = false,
+                          xlims = (lo - pad, hi + pad), xticks = 3,
+                          xformatter = x -> @sprintf("%.3g", x),
+                          title = j == 1 ? "$rowname\n$(short[sname])" : "\n$(short[sname])",
+                          titlefontsize = 11, yticks = false)
+            vline!(h, [t_obs]; lw = 2.5, color = :firebrick)
+            push!(ps, h)
         end
     end
-    if !isempty(ps)
-        plot(ps...; layout = (length(ps) ÷ length(stat_names), length(stat_names)),
-             size = (400 * length(stat_names), 320 * (length(ps) ÷ length(stat_names))))
-        savefig(joinpath(FIGDIR, "ppc.png"))
-    end
+    plot(ps...; layout = (length(ppc_labels), length(stats)),
+         size = (1600, 300 * length(ppc_labels)), left_margin = 6Plots.mm,
+         bottom_margin = 4Plots.mm, tickfontsize = 8, guidefontsize = 11)
+    savefig(joinpath(FIGDIR, "dengue_ppc.png"))
 end
+CSV.write(joinpath(OUTDIR, "ppc_stats.csv"), ppc_rows)
 
 # ============================================================================
 # Outputs for the R/sf maps
 # ============================================================================
 
 println("\nWriting map inputs...")
+cluster_df = let
+    s = chains[BEST]; z = modes[BEST]; sim = sims[BEST]
+    conf = [mean(sim[i, findall(==(z[i]), z)]) for i in 1:N]
+    DataFrame(geocode = GEOCODE, name = NAME, lat = LAT, lon = LON,
+              y = Y, pop = E .* 1e5, incidence = Y ./ E,
+              cluster = z, cocluster_confidence = conf,
+              rho_mean = vec(mean(s.ρ, dims = 1)), r_mean = vec(mean(s.r, dims = 1)))
+end
+CSV.write(joinpath(OUTDIR, "cluster_assignments.csv"), cluster_df)
+jldsave(joinpath(OUTDIR, "similarity_matrix.jld2"); sim = sims[BEST], label = BEST, geocode = GEOCODE)
+
+# Cluster-level summary of the mode partition: size, and the posterior mean
+# incidence and dispersion of its members.
+clusters = combine(groupby(cluster_df, :cluster), nrow => :size,
+                   :rho_mean => median => :rho, :r_mean => median => :r,
+                   [:y, :pop] => ((y, p) -> sum(y) / sum(p) * 1e5) => :pooled_incidence)
+sort!(clusters, :rho)
+CSV.write(joinpath(OUTDIR, "cluster_summary.csv"), clusters)
+@printf("  mode partition: %d clusters; %d singletons; fitted incidence %.0f to %.0f per 100k\n",
+        nrow(clusters), count(==(1), clusters.size), minimum(clusters.rho), maximum(clusters.rho))
+
+# ============================================================================
+# Numbers quoted in the paper
+# ============================================================================
+
+println("\nWriting dengue_numbers.tex...")
 let
-    # The best-mixing Negative Binomial variant drives the maps.
-    nb_rows = filter(r -> startswith(r.family, "negbin"), final_df)
-    best_label = isempty(nb_rows) ? labels[1] : nb_rows[argmax(nb_rows.ess_K), :].label
-    haskey(chains, best_label) || (best_label = labels[1])
-    println("  mapping variant: $best_label")
+    b = only(eachrow(filter(r -> r.label == BEST, final_df)))
+    s2 = filter(r -> r.label == SEED2, final_df)
+    kt = calculate_n_clusters(chains[BEST].c)
+    ci = quantile(Float64.(kt), [0.025, 0.975])
+    α = chains[BEST].α_ddcrp
+    ppc_nb = filter(r -> r.label == BEST, ppc_rows)
+    ppc_po = filter(r -> r.label == POIS, ppc_rows)
+    ppp(df, stat) = (r = filter(x -> x.statistic == stat, df); nrow(r) == 1 ? r.ppp[1] : NaN)
+    sc = Dict(x.label => x for x in scores)
+    pois_final = filter(r -> r.label == POIS, final_df)
+    win = mean(count(<=(meta["hop_radius"]), view(meta["hop"], i, :)) - 1 for i in 1:N)
 
-    ch = chains[best_label]; s = ch.samples; idx = keep_idx(ch)
-    z = points[best_label]
-    sim = sims[best_label]
-
-    # Per-municipality posterior means, plus how confidently each municipality
-    # is placed: the mean co-clustering probability with its own cluster.
-    cocluster_conf = [mean(sim[i, findall(==(z[i]), z)]) for i in 1:N]
-
-    df = DataFrame(
-        geocode = GEOCODE, name = NAME, lat = LAT, lon = LON,
-        y = Y, pop = E .* 1e5, incidence = Y ./ E,
-        cluster = z,
-        cocluster_confidence = cocluster_conf,
-        rho_mean = s isa NegBinPopulationRatesSamples ? vec(mean(s.ρ[idx, :], dims = 1)) : fill(NaN, N),
-        r_mean = s isa NegBinPopulationRatesSamples ? vec(mean(s.r[idx, :], dims = 1)) : fill(NaN, N),
-    )
-    CSV.write(joinpath(OUTDIR, "cluster_assignments.csv"), df)
-    jldsave(joinpath(OUTDIR, "similarity_matrix.jld2");
-            sim = sim, label = best_label, geocode = GEOCODE)
-
-    @printf("  point estimate has %d clusters; sizes: %s\n",
-            length(unique(z)), string(sort(collect(values(countmap(z))), rev = true)))
-    println("  → $(joinpath(OUTDIR, "cluster_assignments.csv"))")
-    println("  → $(joinpath(OUTDIR, "similarity_matrix.jld2"))")
+    macros = [
+        # data
+        "dengueN" => string(N),
+        "dengueCases" => fmtint(sum(Y)),
+        "denguePopM" => fmt(sum(E) / 10, 1),
+        "dengueIncMedian" => fmtint(median(Y ./ E)),
+        "dengueIncMin" => fmtint(minimum(Y ./ E)),
+        "dengueIncMax" => fmtint(maximum(Y ./ E)),
+        "dengueRhoBar" => fmtint(sum(Y) / sum(E)),
+        "dengueEdges" => fmtint(sum(meta["adjacency"]) / 2),
+        "dengueDegree" => fmt(sum(meta["adjacency"]) / N, 2),
+        "dengueDiameter" => string(round(Int, maximum(meta["hop"]))),
+        "dengueHopRadius" => string(meta["hop_radius"]),
+        "dengueWindowSize" => fmt(win, 1),
+        # sampler selection and run length
+        "dengueSweepIter" => fmtint(sweep_df.n_iter[1]),
+        "dengueSweepBurn" => fmtint(sweep_df.burn[1]),
+        "dengueNSweep" => string(nrow(sweep_df)),
+        "dengueNTune" => string(isnothing(tune_df) ? 0 : nrow(tune_df)),
+        "dengueFamRho" => FAMILY_NAME[meta["best_fam_rho"]],
+        "dengueFamR" => FAMILY_NAME[meta["best_fam_r"]],
+        "dengueFixedDim" => meta["best_resample"] ? "Resample" : "No Update",
+        "dengueSigmaBirth" => fmt(meta["sigma_birth"], 2),
+        "dengueSigmaResample" => fmt(meta["sigma_resample"], 2),
+        # The σ clause of the sentence, since σ_r only exists under Resample.
+        "dengueSigmaText" => "\$\\sigma_b = $(fmt(meta["sigma_birth"], 2))\$" *
+            (meta["best_resample"] ? " and \$\\sigma_r = $(fmt(meta["sigma_resample"], 2))\$" : ""),
+        "dengueFinalIter" => fmtint(meta["n_samples"]),
+        "dengueFinalBurn" => fmtint(meta["burn"]),
+        "dengueFinalThin" => string(meta["thin"]),
+        "dengueNPost" => fmtint(b.n_post),
+        "dengueHours" => fmt(b.total_time / 3600, 1),
+        # posterior of K and α
+        "dengueMeanK" => fmt(b.mean_K, 1),
+        "dengueModeK" => string(b.mode_K),
+        "dengueKlo" => string(round(Int, ci[1])),
+        "dengueKhi" => string(round(Int, ci[2])),
+        "dengueMeanKSeedTwo" => nrow(s2) == 1 ? fmt(s2.mean_K[1], 1) : "--",
+        "dengueModeKSeedTwo" => nrow(s2) == 1 ? string(s2.mode_K[1]) : "--",
+        "dengueAlphaMean" => fmt(mean(α), 2),
+        "dengueAlphaLo" => fmt(quantile(α, 0.025), 2),
+        "dengueAlphaHi" => fmt(quantile(α, 0.975), 2),
+        "dengueSeedARI" => fmt(seed_ari, 2),
+        "dengueSeedSimMAD" => fmt(seed_sim_mad, 3),
+        # mixing
+        "dengueAccBirth" => fmt(b.acc_birth * 100, 2),
+        "dengueAccDeath" => fmt(b.acc_death * 100, 2),
+        "dengueAccFixed" => fmt(b.acc_fixed * 100, 1),
+        "dengueEssK" => string(round(Int, b.ess_K)),
+        "dengueEssRho" => string(round(Int, b.med_ess_ρ)),
+        "dengueEssR" => string(round(Int, b.med_ess_r)),
+        # mode partition
+        "dengueNClusters" => string(nrow(clusters)),
+        "dengueNSingletons" => string(count(==(1), clusters.size)),
+        "dengueLargestCluster" => string(maximum(clusters.size)),
+        "dengueRhoLow" => fmtint(minimum(clusters.rho)),
+        "dengueRhoHigh" => fmtint(maximum(clusters.rho)),
+        "dengueConfMedian" => fmt(median(cluster_df.cocluster_confidence), 2),
+        # Poisson comparator and model comparison
+        "denguePoisMeanK" => nrow(pois_final) == 1 ? fmt(pois_final.mean_K[1], 0) : "--",
+        "dengueWaicNB" => haskey(sc, BEST) ? fmtint(sc[BEST].waic) : "--",
+        "dengueWaicPois" => haskey(sc, POIS) ? fmtint(sc[POIS].waic) : "--",
+        "dengueLooDiff" => fmtint(loo_diff.diff),
+        "dengueLooDiffSE" => fmtint(loo_diff.se),
+        "dengueBadK" => haskey(sc, BEST) ? string(sc[BEST].n_bad_k) : "--",
+        # posterior predictive p-values
+        "denguePppDispNB" => fmt(ppp(ppc_nb, "dispersion index Var/Mean"), 2),
+        "denguePppMaxNB" => fmt(ppp(ppc_nb, "maximum count"), 2),
+        "denguePppLowNB" => fmt(ppp(ppc_nb, "n municipalities < 100/100k"), 2),
+        "denguePppQNB" => fmt(ppp(ppc_nb, "90th pct of incidence"), 2),
+        "denguePppMoranNB" => fmt(ppp(ppc_nb, "Moran's I of log incidence"), 2),
+        "denguePppDispPois" => fmt(ppp(ppc_po, "dispersion index Var/Mean"), 2),
+        "denguePppLowPois" => fmt(ppp(ppc_po, "n municipalities < 100/100k"), 2),
+    ]
+    lines = ["% Generated by src/analyse_dengue.jl; re-run it to update.",
+             "% Numbers quoted in the dengue section of the paper."]
+    for (k, v) in macros
+        push!(lines, "\\newcommand{\\$k}{$v}")
+    end
+    open(io -> println(io, join(lines, "\n")), joinpath(OUTDIR, "dengue_numbers.tex"), "w")
 end
 
-println("\nDone. Figures in $FIGDIR")
-println("Run `Rscript src/map_dengue.R` for the spatial maps.")
+# ============================================================================
+# Copy the paper assets
+# ============================================================================
+
+if IS_TEST
+    println("\n--test: paper assets left in $OUTDIR (docs/paper/ untouched).")
+else
+    for f in ("dengue_k_traces.png", "dengue_ppc.png")
+        cp(joinpath(FIGDIR, f), joinpath(PAPER, "figures", f); force = true)
+    end
+    for f in ("table_dengue.tex", "dengue_numbers.tex")
+        cp(joinpath(OUTDIR, f), joinpath(PAPER, "tables", f); force = true)
+    end
+    println("\nPaper assets copied to $PAPER/{figures,tables}/")
+end
+
+println("\nDone. Run `Rscript src/map_dengue.R$(IS_TEST ? " --test" : "")` for the maps.")

@@ -52,13 +52,13 @@ run_r() {
 status=0
 ran=0
 
-if [[ -f results/real_data/dengue/run_metadata.jld2 ]]; then
+if [[ -f results/real_data/dengue_hop/run_metadata.jld2 ]]; then
   echo "=== dengue ==="
   ran=1
   run_julia src/analyse_dengue.jl || status=1
   run_r src/map_dengue.R || status=1
 else
-  echo "SKIP dengue — results/real_data/dengue/run_metadata.jld2 not found."
+  echo "SKIP dengue — results/real_data/dengue_hop/run_metadata.jld2 not found."
 fi
 
 echo
