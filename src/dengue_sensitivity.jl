@@ -439,6 +439,12 @@ end
 if TASK_ID > 0
     1 <= TASK_ID <= length(GRID) ||
         error("--task $TASK_ID is outside the grid (1..$(length(GRID)))")
+    # The Slurm submit script sets N_CONFIGS without running Julia; a stale value
+    # would silently skip or misnumber configs, so refuse to run on a mismatch.
+    if haskey(ENV, "N_CONFIGS") && parse(Int, ENV["N_CONFIGS"]) != length(GRID)
+        error("N_CONFIGS=$(ENV["N_CONFIGS"]) from the submit script, but the grid has " *
+              "$(length(GRID)) configs; update N_CONFIGS in submit_dengue_sensitivity.sh")
+    end
     g = GRID[TASK_ID]
     cid = config_id(g)
     done = joinpath(OUTDIR, "tasks", cid * ".jld2")

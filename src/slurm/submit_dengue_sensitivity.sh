@@ -3,8 +3,10 @@
 # Submit the dengue prior × proposal grid as a Slurm array, with the collect
 # and report job queued after it.
 #
-# The grid size is read from the Julia script (`--list`), so the array range
-# follows any edit to the grid. Run from the repo root on a login node.
+# Nothing here runs Julia: this runs on a login node. The grid size is the
+# N_CONFIGS constant below, and every array task checks it against the grid in
+# dengue_sensitivity.jl, failing at once if they disagree. After editing the
+# grid, update N_CONFIGS (the --test grid has 16, the full grid 224).
 #
 # Usage:
 #   bash src/slurm/submit_dengue_sensitivity.sh
@@ -18,20 +20,10 @@ set -euo pipefail
 
 mkdir -p logs
 
-if [[ -z "${TASKS:-}" ]]; then
-  n=$( ( module purge
-         module load bear-apps/2024a
-         module load bluebear
-         module load "${JULIA_MODULE:-Julia/1.12.2-linux-x86_64}"
-         julia --project=. src/dengue_sensitivity.jl --list ${SENS_ARGS:-} ) \
-       | sed -n 's/^N_CONFIGS=//p')
-  if [[ -z "$n" ]]; then
-    echo "Could not read the grid size from dengue_sensitivity.jl --list" >&2
-    exit 1
-  fi
-  TASKS="1-${n}"
-  echo "Grid: ${n} configurations"
-fi
+N_CONFIGS="${N_CONFIGS:-224}"
+export N_CONFIGS
+TASKS="${TASKS:-1-${N_CONFIGS}}"
+echo "Grid: ${N_CONFIGS} configurations"
 
 array="${TASKS}"
 if [[ -n "${MAX_PARALLEL:-}" ]]; then array="${array}%${MAX_PARALLEL}"; fi
