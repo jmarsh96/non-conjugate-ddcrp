@@ -7,7 +7,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/ddcrp_dengue_sens_%A_%a.out
 #SBATCH --error=logs/ddcrp_dengue_sens_%A_%a.err
-#SBATCH --mail-type=END,FAIL,ARRAY_TASKS
+#SBATCH --mail-type=FAIL
 #SBATCH --mail-user=j.s.marsh@bham.ac.uk
 
 # One configuration of the dengue prior × proposal grid per array task. Submit
@@ -41,7 +41,7 @@ done
 module purge
 module load bear-apps/2024a
 module load bluebear
-module load "${JULIA_MODULE:-Julia/1.12.2-linux-x86_64}"
+module load Julia/1.12.2-linux-x86_64
 
 julia --project=. src/dengue_sensitivity.jl --task "${SLURM_ARRAY_TASK_ID}" \
   --uf "${UF}" --year "${YEAR}" ${SENS_ARGS:-}
