@@ -11,20 +11,24 @@
 # only 5 of them (4 chains of the selected sampler plus the Poisson comparator).
 #
 # Memory: Part 3 is the heavy stage. Each of its 5 workers holds a raw
-# 1.05M x 399 chain for c, rho and r, about 10 GB, plus the thinned copy it
-# saves; the 60k-iteration sweep chains are about 0.6 GB each. 120G is not
-# enough for Part 3, hence 200G.
+# 300k x 399 chain for c, rho and r, about 2.9 GB, plus the thinned copy it
+# saves; the 60k-iteration sweep chains are about 0.6 GB each. The two stages
+# peak at a similar place, roughly 20 GB including the runtime on each worker:
+# Part 1 with 16 workers holding small chains, Part 3 with 5 holding large ones.
+# 72G covers that with room for the GC to lag behind pmap handing out new tasks.
 #
 # Timing: measured at ~13 s per 1k iterations at n=399 under the hop-window
-# prior, so Parts 1 and 2 take roughly 15 minutes each and Part 3 about 4 h.
-# 24 h is requested for headroom.
+# prior, so Parts 1 and 2 take roughly 15 minutes each and Part 3 about 1 h.
+# Links are proposed from the ddCRP prior, which both mixes far better and
+# costs less per iteration than the uniform proposal it replaced. 24 h is
+# requested for headroom.
 # ============================================================================
 
 #SBATCH --job-name=ddcrp_dengue
 #SBATCH --nodes=1
 #SBATCH --ntasks=18
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=244G
+#SBATCH --mem=72G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/ddcrp_dengue_%j.out
 #SBATCH --error=logs/ddcrp_dengue_%j.err

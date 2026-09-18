@@ -236,15 +236,15 @@ const N_SAMPLES_SWEEP = IS_TEST ? 1_000 :  60_000
 const BURN_SWEEP      = IS_TEST ?   200 :  10_000
 const THIN_SWEEP      = 5
 # Final chains: N_POST_FINAL draws AFTER burn-in, so the chain length is the
-# sum of the two. At 1M post-burn-in draws the raw chain holds c, ρ and r as
-# 1.05M × 399 matrices, about 10 GB per worker, so the thinning below is what
-# keeps the saved chains (and the analyse script, which opens all of them at
-# once) to a workable size. Thinning by 50 costs almost nothing: the integrated
-# autocorrelation time of K measured on the 250k run was 700 to 1500 iterations.
-const N_POST_FINAL    = IS_TEST ? 1_200 : 1_000_000
-const BURN_FINAL      = IS_TEST ?   300 :    50_000
+# sum of the two. 250k is sized from the prior link proposal: a 20k-iteration
+# run of the selected sampler gave ESS(K) ≈ 200, about fifteen times the
+# per-second yield of the uniform proposal, so 250k should give ESS(K) in the
+# low thousands per chain. Thinning by 10 keeps 25k draws per chain, about
+# 240 MB saved and ~2.9 GB raw per worker.
+const N_POST_FINAL    = IS_TEST ? 1_200 : 250_000
+const BURN_FINAL      = IS_TEST ?   300 :  50_000
 const N_SAMPLES_FINAL = N_POST_FINAL + BURN_FINAL
-const THIN_FINAL      = IS_TEST ?     5 :        50
+const THIN_FINAL      = IS_TEST ?     5 :      10
 
 # Independent chains of the selected sampler. There is no collapsed sampler to
 # compare against, so between-chain agreement is the convergence check, and R̂
