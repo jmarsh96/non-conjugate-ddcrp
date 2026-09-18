@@ -18,6 +18,13 @@
 # how much the clustering depends on it, and on the choice of metric, is the
 # subject of `src/dengue_sensitivity.jl`.
 #
+# LINKS ARE PROPOSED FROM THE PRIOR (`link_proposal = PriorLink()`), not
+# uniformly: under the window only ~19 of the 399 municipalities carry any
+# weight, so a uniform draw would waste ~95% of proposals, and a likelihood
+# evaluation each, on links the prior all but forbids. With the prior proposal
+# the proposal ratio cancels the prior ratio, so acceptance depends only on the
+# likelihood and the parameter proposal.
+#
 # Run `src/prepare_dengue_data.jl` and `src/prepare_dengue_adjacency.R` first.
 #
 # Parts, all via `pmap` over worker processes:
@@ -27,9 +34,10 @@
 #      the configuration with the largest ESJD(K).
 #   2. σ tuning — a grid over the winner's tunable proposal scales, again by
 #      ESJD(K). Skipped when nothing in the winner is tunable.
-#   3. Final — full-length chains for the selected sampler, a second seed of it
-#      (Monte Carlo agreement check), and a non-marginalised Poisson comparator
-#      that exists only to be scored against the NB by WAIC / LOO.
+#   3. Final — one chain per seed in FINAL_SEEDS for the selected sampler (their
+#      agreement replaces the Gibbs baseline this model does not have), and a
+#      non-marginalised Poisson comparator that exists only to be scored against
+#      the NB by WAIC / LOO.
 #
 # Usage:
 #   julia --project=. src/run_dengue.jl --pilot
@@ -130,6 +138,11 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
         track_diagnostics = true,
         infer_params = Dict{Symbol,Bool}(:α_ddcrp => true, :s_ddcrp => false),
         prop_sds = Dict{Symbol,Float64}(:ρ => PROP_SDS.ρ, :r => PROP_SDS.r),
+        # Links are proposed from the ddCRP prior, not uniformly. Under the hop
+        # window only about 19 of the 399 municipalities carry any weight, so a
+        # uniform draw would spend 95% of proposals on links the prior all but
+        # forbids, each costing a likelihood evaluation before being rejected.
+        link_proposal = PriorLink(),
     )
 
     # α_ddcrp ~ Gamma(1, rate 0.01), inferred; the kernel rate is fixed at 1
@@ -219,13 +232,25 @@ end
 const N_SAMPLES_SWEEP = IS_TEST ? 1_000 :  60_000
 const BURN_SWEEP      = IS_TEST ?   200 :  10_000
 const THIN_SWEEP      = 5
-const N_SAMPLES_FINAL = IS_TEST ? 1_500 : 250_000
-const BURN_FINAL      = IS_TEST ?   300 :  50_000
-const THIN_FINAL      = IS_TEST ?     5 :      10
+# Final chains: N_POST_FINAL draws AFTER burn-in, so the chain length is the
+# sum of the two. At 1M post-burn-in draws the raw chain holds c, ρ and r as
+# 1.05M × 399 matrices, about 10 GB per worker, so the thinning below is what
+# keeps the saved chains (and the analyse script, which opens all of them at
+# once) to a workable size. Thinning by 50 costs almost nothing: the integrated
+# autocorrelation time of K measured on the 250k run was 700 to 1500 iterations.
+const N_POST_FINAL    = IS_TEST ? 1_200 : 1_000_000
+const BURN_FINAL      = IS_TEST ?   300 :    50_000
+const N_SAMPLES_FINAL = N_POST_FINAL + BURN_FINAL
+const THIN_FINAL      = IS_TEST ?     5 :        50
+
+# Independent chains of the selected sampler. There is no collapsed sampler to
+# compare against, so between-chain agreement is the convergence check, and R̂
+# needs more than two chains to be informative.
+const FINAL_SEEDS = IS_TEST ? [42, 202] : [42, 202, 7, 13]
 
 const OUTDIR = IS_TEST ?
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue_hop_test") :
-    joinpath(@__DIR__, "..", "results", "real_data", "dengue_hop")
+    joinpath(@__DIR__, "..", "results", "real_data", "dengue_test") :
+    joinpath(@__DIR__, "..", "results", "real_data", "dengue")
 mkpath(OUTDIR)
 
 # ============================================================================
@@ -477,19 +502,24 @@ best_cfg(; seed, label = nothing) =
                n_samples = N_SAMPLES_FINAL, burn = BURN_FINAL, thin = THIN_FINAL,
                seed = seed, suffix = "_final_seed$(seed)")
 
+const BEST_LABEL = best_cfg(; seed = first(FINAL_SEEDS)).label
+
+# One chain per seed, labelled "(chain k)" after the first so the analyse script
+# can tell them apart, plus the Poisson comparator.
 final_cfgs = Any[
-    best_cfg(; seed = 42),
-    # A second seed of the same sampler, to separate Monte Carlo error from
-    # genuine posterior structure; there being no collapsed sampler for the NB.
-    best_cfg(; seed = 202, label = best_cfg(; seed = 42).label * " (seed 2)"),
-    make_cfg(; family = :poisson, varied = "comparator",
-               n_samples = N_SAMPLES_FINAL, burn = BURN_FINAL, thin = THIN_FINAL,
-               suffix = "_final"),
+    best_cfg(; seed = s, label = k == 1 ? BEST_LABEL : BEST_LABEL * " (chain $k)")
+    for (k, s) in enumerate(FINAL_SEEDS)
 ]
-const BEST_LABEL = final_cfgs[1].label
+push!(final_cfgs,
+      make_cfg(; family = :poisson, varied = "comparator",
+                 n_samples = N_SAMPLES_FINAL, burn = BURN_FINAL, thin = THIN_FINAL,
+                 suffix = "_final"))
 
 println("\n$(repeat('=', 80))")
-println("PART 3 — final chains: $(length(final_cfgs)) configs × $N_SAMPLES_FINAL iterations")
+@printf("PART 3 — final chains: %d chains of the selected sampler + Poisson comparator\n",
+        length(FINAL_SEEDS))
+@printf("  %d iterations each (%d burn-in + %d kept), thinned by %d ⇒ %d draws per chain\n",
+        N_SAMPLES_FINAL, BURN_FINAL, N_POST_FINAL, THIN_FINAL, N_POST_FINAL ÷ THIN_FINAL)
 println("$(repeat('=', 80))")
 
 final_df = DataFrame(collect(pmap(run_and_save, final_cfgs)))
@@ -509,6 +539,7 @@ jldsave(joinpath(OUTDIR, "run_metadata.jld2");
         best_resample = BEST_RESAMPLE,
         sigma_birth = sel_σ_birth, sigma_resample = sel_σ_resample,
         n_samples = N_SAMPLES_FINAL, burn = BURN_FINAL, thin = THIN_FINAL,
+        n_post = N_POST_FINAL, final_seeds = FINAL_SEEDS,
         best_label = BEST_LABEL,
         chain_files = [c.chain_filename for c in final_cfgs],
         labels = [c.label for c in final_cfgs],

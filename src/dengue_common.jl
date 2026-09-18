@@ -10,7 +10,7 @@
 # need it.
 # ============================================================================
 
-using CSV, DataFrames, Statistics, StatsBase
+using CSV, DataFrames, Statistics, StatsBase, Distributions
 using DistanceDependentCRP
 
 # ============================================================================
@@ -184,4 +184,37 @@ function ppc_statistics(E, nbrs)
         "90th pct of incidence"        => v -> quantile(v ./ E, 0.9),
         "Moran's I of log incidence"   => v -> moran_I(loginc(v), nbrs),
     ]
+end
+
+# ============================================================================
+# Between-chain convergence
+# ============================================================================
+
+"""
+    split_rhat(chains) -> Float64
+
+Rank-normalised split-R̂ (Vehtari et al. 2021) over a vector of equal-length
+draw vectors. Each chain is split in half, the pooled draws are rank-normalised
+so the statistic is robust to heavy tails, and the usual between/within
+variance ratio is formed. Values above about 1.01 indicate that the chains have
+not converged to a common distribution.
+"""
+function split_rhat(chains::AbstractVector{<:AbstractVector{<:Real}})
+    length(chains) >= 2 || return NaN
+    L = minimum(length.(chains)) ÷ 2
+    L >= 2 || return NaN
+    pooled = vcat([c[1:2L] for c in chains]...)
+    # Rank-normalise: ranks to normal scores via the Blom transform.
+    z = quantile.(Normal(), (tiedrank(pooled) .- 3/8) ./ (length(pooled) + 1/4))
+    parts = Vector{Vector{Float64}}()
+    off = 0
+    for _ in chains
+        push!(parts, z[off .+ (1:L)])
+        push!(parts, z[off .+ (L+1:2L)])
+        off += 2L
+    end
+    W = mean(var.(parts))
+    B = L * var(mean.(parts))
+    W > 0 || return NaN
+    return sqrt(((L - 1) / L * W + B / L) / W)
 end

@@ -7,14 +7,16 @@
 # allocation into a Julia worker, so --ntasks IS the worker count.
 #
 # --ntasks=18 covers the widest stage (Part 1 sweeps 16 configs; Part 2 tunes
-# at most 14), so each part completes in a single parallel round.
+# at most 14), so each part completes in a single parallel round. Part 3 uses
+# only 5 of them (4 chains of the selected sampler plus the Poisson comparator).
 #
-# Memory: the heavy stage is Part 3, where each of 3 workers holds a 250k x 399
-# chain for c, rho and r (about 2.4 GB) plus a thinned copy; the 60k-iteration
-# sweep chains are about 0.6 GB each. 120G on one node leaves ample headroom.
+# Memory: Part 3 is the heavy stage. Each of its 5 workers holds a raw
+# 1.05M x 399 chain for c, rho and r, about 10 GB, plus the thinned copy it
+# saves; the 60k-iteration sweep chains are about 0.6 GB each. 120G is not
+# enough for Part 3, hence 200G.
 #
-# Timing: the hop-window prior (radius 2) measured ~34 s per 1k iterations at
-# n=399, giving roughly 1 h each for Parts 1 and 2 and ~3 h for Part 3.
+# Timing: measured at ~13 s per 1k iterations at n=399 under the hop-window
+# prior, so Parts 1 and 2 take roughly 15 minutes each and Part 3 about 4 h.
 # 24 h is requested for headroom.
 # ============================================================================
 
@@ -22,7 +24,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=18
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=120G
+#SBATCH --mem=244G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/ddcrp_dengue_%j.out
 #SBATCH --error=logs/ddcrp_dengue_%j.err
