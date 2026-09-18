@@ -38,6 +38,16 @@ module purge
 module load bear-apps/2024a
 module load Julia/1.12.2-linux-x86_64
 
+# BlueBEAR defaults SLURM_EXPORT_ENV=NONE, so tasks launched by srun start
+# without the module environment. SlurmClusterManager launches every worker with
+# srun, and the module's `julia` is a wrapper that finds `julia.bin` on PATH, so
+# without this the workers die with "julia.bin: command not found".
+export SLURM_EXPORT_ENV=ALL
+
+# Timeout for a worker connecting back to the master. SlurmClusterManager's own
+# launch_timeout is a Julia keyword and is set in the run script.
+export JULIA_WORKER_TIMEOUT=300
+
 mkdir -p logs
 
 REGION="${AQS_REGION:-conus}"

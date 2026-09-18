@@ -34,7 +34,10 @@ const INFER_S = "--infer_s" in ARGS
 
 if USE_SLURM
     using SlurmClusterManager
-    addprocs(SlurmManager())
+    # launch_timeout defaults to 60s, which is not enough for a wide allocation
+    # loading packages off /rds; the workers then die with "launch_timeout
+    # exceeded" before they can call home.
+    addprocs(SlurmManager(launch_timeout = 300.0))
 else
     addprocs(8)
 end
