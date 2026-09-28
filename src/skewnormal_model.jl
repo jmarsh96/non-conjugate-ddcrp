@@ -172,77 +172,97 @@ birth_param_logpdf(::SkewNormalClusters, ::Val{:α}, ::PriorProposal, v, S_i,
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
     logpdf(Normal(priors.α_m, priors.α_s), v)
 
-# ---- NormalMomentMatch for the real-support parameters ξ and α -------------
-# Proposal centred at the MoM estimate; natural scale, |det J| = 1.
-_nmm_centre(::Val{:ξ}, est, priors) = isnothing(est) ? priors.ξ_m : est[1]
-_nmm_centre(::Val{:α}, est, priors) = isnothing(est) ? priors.α_m : est[3]
+# ---- Moment-matched proposals ----------------------------------------------
+# Every moment-matched proposal centres on the method-of-moments fit of the
+# moving set, which needs at least MM_MIN_SIZE observations. Below that (or when
+# the fit fails, e.g. all observations equal) the proposals fall back as the
+# paper describes: the location is centred on the moving-set mean, which is
+# y_i itself for a singleton, and the scale and shape are drawn from their
+# priors, since one or two observations say almost nothing about them.
+const MM_MIN_SIZE = 3
+_mm_est(S_i, data) = length(S_i) >= MM_MIN_SIZE ?
+    fit_skewnormal_moments(_view_S(data, S_i); min_size = MM_MIN_SIZE) : nothing
 
-for P in (:ξ, :α)
-    @eval function sample_birth_param(::SkewNormalClusters, v::Val{$(QuoteNode(P))},
-            prop::NormalMomentMatch, S_i, state::SkewNormalClustersState, data,
-            priors::SkewNormalClustersPriors)
-        est = length(S_i) >= 3 ? fit_skewnormal_moments(_view_S(data, S_i); min_size=3) : nothing
-        Q = Normal(_nmm_centre(v, est, priors), prop.σ[1])
-        x = rand(Q); return x, logpdf(Q, x)
-    end
-    @eval function birth_param_logpdf(::SkewNormalClusters, v::Val{$(QuoteNode(P))},
-            prop::NormalMomentMatch, x, S_i, state::SkewNormalClustersState, data,
-            priors::SkewNormalClustersPriors)
-        est = length(S_i) >= 3 ? fit_skewnormal_moments(_view_S(data, S_i); min_size=3) : nothing
-        return logpdf(Normal(_nmm_centre(v, est, priors), prop.σ[1]), x)
-    end
+# The draw and density used when the scale or shape falls back to its prior.
+_prior_dist(::Val{:ω}, priors) = InverseGamma(priors.ω_a, priors.ω_b)
+_prior_dist(::Val{:α}, priors) = Normal(priors.α_m, priors.α_s)
+
+# ---- NormalMomentMatch for the location ξ ------------------------------------
+# Natural scale, |det J| = 1.
+function _nmm_xi_dist(prop, S_i, data)
+    est = _mm_est(S_i, data)
+    centre = isnothing(est) ? mean(_view_S(data, S_i)) : est[1]
+    return Normal(centre, prop.σ[1])
 end
+function sample_birth_param(::SkewNormalClusters, ::Val{:ξ}, prop::NormalMomentMatch,
+        S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
+    Q = _nmm_xi_dist(prop, S_i, data); x = rand(Q); return x, logpdf(Q, x)
+end
+birth_param_logpdf(::SkewNormalClusters, ::Val{:ξ}, prop::NormalMomentMatch, x, S_i,
+        state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
+    logpdf(_nmm_xi_dist(prop, S_i, data), x)
 
-# ---- NormalMomentMatch for the positive scale parameter ω (truncated) -------
-# Normal centred at the MoM scale estimate, truncated to (0, ∞) for positivity.
-function _nmm_omega_centre(S_i, data, priors)
-    est = length(S_i) >= 3 ? fit_skewnormal_moments(_view_S(data, S_i); min_size = 3) : nothing
-    return isnothing(est) ? ω_prior_mean(priors) : max(est[2], 1e-3)
+# ---- NormalMomentMatch for the shape α ---------------------------------------
+# Natural scale, |det J| = 1; prior below MM_MIN_SIZE.
+function _nmm_alpha_dist(prop, S_i, data, priors)
+    est = _mm_est(S_i, data)
+    return isnothing(est) ? _prior_dist(Val(:α), priors) : Normal(est[3], prop.σ[1])
+end
+function sample_birth_param(::SkewNormalClusters, ::Val{:α}, prop::NormalMomentMatch,
+        S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
+    Q = _nmm_alpha_dist(prop, S_i, data, priors); x = rand(Q); return x, logpdf(Q, x)
+end
+birth_param_logpdf(::SkewNormalClusters, ::Val{:α}, prop::NormalMomentMatch, x, S_i,
+        state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
+    logpdf(_nmm_alpha_dist(prop, S_i, data, priors), x)
+
+# ---- NormalMomentMatch for the positive scale ω (truncated) ------------------
+# Normal centred at the MoM scale estimate, truncated to (0, ∞); prior below
+# MM_MIN_SIZE.
+function _nmm_omega_dist(prop, S_i, data, priors)
+    est = _mm_est(S_i, data)
+    isnothing(est) && return _prior_dist(Val(:ω), priors)
+    return truncated(Normal(max(est[2], 1e-3), prop.σ[1]), 0.0, Inf)
 end
 function sample_birth_param(::SkewNormalClusters, ::Val{:ω}, prop::NormalMomentMatch,
         S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
-    Q = truncated(Normal(_nmm_omega_centre(S_i, data, priors), prop.σ[1]), 0.0, Inf)
-    v = rand(Q); return v, logpdf(Q, v)
+    Q = _nmm_omega_dist(prop, S_i, data, priors); v = rand(Q); return v, logpdf(Q, v)
 end
 function birth_param_logpdf(::SkewNormalClusters, ::Val{:ω}, prop::NormalMomentMatch,
         v, S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
     v <= 0 && return -Inf
-    return logpdf(truncated(Normal(_nmm_omega_centre(S_i, data, priors), prop.σ[1]), 0.0, Inf), v)
+    return logpdf(_nmm_omega_dist(prop, S_i, data, priors), v)
 end
 
-# ---- LogNormalMomentMatch for the positive scale parameter ω ----------------
-# log(ω') ~ Normal(log ω̂, σ); Jacobian −log(ω') on the natural scale.
-function _lnmm_omega_centre(prop, S_i, data, priors)
-    est = length(S_i) >= prop.min_size ? fit_skewnormal_moments(_view_S(data, S_i); min_size=prop.min_size) : nothing
-    ω̂ = isnothing(est) ? ω_prior_mean(priors) : est[2]
-    return log(max(ω̂, 1e-3))
-end
+# ---- LogNormalMomentMatch for the positive scale ω ---------------------------
+# log(ω') ~ Normal(log ω̂, σ); Jacobian −log(ω') on the natural scale. Prior
+# below MM_MIN_SIZE.
 function sample_birth_param(::SkewNormalClusters, ::Val{:ω}, prop::LogNormalMomentMatch,
         S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
-    μ = _lnmm_omega_centre(prop, S_i, data, priors)
+    est = _mm_est(S_i, data)
+    if isnothing(est)
+        Q = _prior_dist(Val(:ω), priors); v = rand(Q); return v, logpdf(Q, v)
+    end
+    μ = log(max(est[2], 1e-3))
     logω = rand(Normal(μ, prop.σ[1])); ω = exp(logω)
     return ω, logpdf(Normal(μ, prop.σ[1]), logω) - logω
 end
 function birth_param_logpdf(::SkewNormalClusters, ::Val{:ω}, prop::LogNormalMomentMatch,
         ω, S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
     ω <= 0 && return -Inf
-    μ = _lnmm_omega_centre(prop, S_i, data, priors)
+    est = _mm_est(S_i, data)
+    isnothing(est) && return logpdf(_prior_dist(Val(:ω), priors), ω)
+    μ = log(max(est[2], 1e-3))
     return logpdf(Normal(μ, prop.σ[1]), log(ω)) - log(ω)
 end
 
-# ---- InverseGammaMomentMatch for the positive scale parameter ω -------------
-# Data-driven InverseGamma proposal for the scale, targeting the method-of-moments
-# scale estimate ω̂: InverseGamma(a, ω̂(a-1)) has mean ω̂ (paper §2.5.1.2 — same
-# target as the log-normal variant, different proposal family). Falls back to the
-# ω prior when the moving set is too small or the fit fails. `a` sets the spread
-# (CV = 1/√(a-2)); the birth/death MH ratio corrects for any mismatch exactly.
+# ---- InverseGammaMomentMatch for the positive scale ω ------------------------
+# InverseGamma(a, ω̂(a-1)) has mean ω̂ and CV 1/√(a-2); prior below MM_MIN_SIZE.
 const _IG_OMEGA_SHAPE = 5.0
 function _ig_omega_dist(prop::InverseGammaMomentMatch, S_i, data, priors::SkewNormalClustersPriors)
-    est = length(S_i) >= prop.min_size ?
-          fit_skewnormal_moments(_view_S(data, S_i); min_size = prop.min_size) : nothing
-    ω̂ = isnothing(est) ? nothing : est[2]
-    (isnothing(ω̂) || !(ω̂ > 0)) && return InverseGamma(priors.ω_a, priors.ω_b)  # prior fallback
-    return InverseGamma(_IG_OMEGA_SHAPE, ω̂ * (_IG_OMEGA_SHAPE - 1))
+    est = _mm_est(S_i, data)
+    (isnothing(est) || !(est[2] > 0)) && return _prior_dist(Val(:ω), priors)
+    return InverseGamma(_IG_OMEGA_SHAPE, est[2] * (_IG_OMEGA_SHAPE - 1))
 end
 function sample_birth_param(::SkewNormalClusters, ::Val{:ω}, prop::InverseGammaMomentMatch,
         S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
@@ -277,13 +297,18 @@ end
 # Table contribution and posterior
 # ============================================================================
 
+# Switch for the prior-recovery (Geweke) check in `geweke_skewnormal.jl`: with
+# the likelihood off the target is the prior, which every sampler must recover
+# whatever its proposals, since those still use the data.
+const LIKELIHOOD_ON = Ref(true)
+
 function table_contribution(::SkewNormalClusters, table::AbstractVector{Int},
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
     y = observations(data)
     ξ = state.ξ_dict[table]; ω = state.ω_dict[table]; α = state.α_dict[table]
     (ω <= 0 || !isfinite(ω)) && return -Inf
     d = SkewNormal(ξ, ω, α)
-    log_lik = sum(logpdf(d, y[i]) for i in table)
+    log_lik = LIKELIHOOD_ON[] ? sum(logpdf(d, y[i]) for i in table) : 0.0
     log_prior = logpdf(Normal(priors.ξ_m, priors.ξ_s), ξ) +
                 logpdf(InverseGamma(priors.ω_a, priors.ω_b), ω) +
                 logpdf(Normal(priors.α_m, priors.α_s), α)

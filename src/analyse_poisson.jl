@@ -6,6 +6,10 @@ const K_TRUE = 3
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 
+# Legend names. The "prior" birth of the run script draws from the conjugate
+# conditional posterior of the moving set, so the paper calls it Conj.
+legend_name(b) = get(Dict("conjugate" => "gibbs", "prior" => "conj"), b, b)
+
 const CLUSTER_COLS = palette(:tab10)[1:K_TRUE]
 
 const BIRTH_COLOURS = Dict(
@@ -32,25 +36,25 @@ function generate_latex_table(scenario_name::String, df::DataFrame, outdir::Stri
 
     birth_groups = ["conjugate", "prior", "nmm", "lnmm"]
     present = [b for b in birth_groups if any(==(b), df.birth)]
-    shorten(s) = Dict("conjugate"=>"Gibbs", "prior"=>"Prior",
+    shorten(s) = Dict("conjugate"=>"Gibbs", "prior"=>"Conj.",
                       "nmm"=>"NMM", "lnmm"=>"LNMM")[s]
     bf(s, bold) = bold ? "\\textbf{$s}" : s
 
     lines = String[]
     push!(lines, "% Required packages: booktabs, multirow")
-    push!(lines, "% Generated automatically — re-run script to update")
+    push!(lines, "% Generated automatically; re-run script to update")
     push!(lines, "")
-    push!(lines, "\\begin{tabular}{l c c r r r r}")
+    push!(lines, "\\begin{tabular}{l c c r r r r r}")
     push!(lines, "  \\toprule")
     push!(lines, "  Birth & Fixed-dim & \$\\bar{K}\$ & Mode \$K\$ " *
-                 "& \$P(K{=}K^*)\$ & ESS\$(K)\$ & Birth acc (\\%) \\\\")
+                 "& \$P(K{=}K^*)\$ & ESJD\$(K)\$ & ESS\$(K)\$ & Birth acc (\\%) \\\\")
     push!(lines, "  \\midrule")
 
     for blabel in present
         sub = filter(r -> r.birth == blabel, df)
         for (i, row) in enumerate(eachrow(sub))
             bold = false
-            bacc_s = isnan(row.acc_birth) ? "—" :
+            bacc_s = isnan(row.acc_birth) ? "--" :
                      bf(latex_fmt(row.acc_birth * 100, 1), bold)
             push!(lines, "  " *
                 bf(shorten(blabel), bold) * " & " *
@@ -58,6 +62,7 @@ function generate_latex_table(scenario_name::String, df::DataFrame, outdir::Stri
                 bf(latex_fmt(row.mean_K, 2),        bold) * " & " *
                 bf(string(row.mode_K),              bold) * " & " *
                 bf(latex_fmt(row.prob_K_true, 3),   bold) * " & " *
+                bf(latex_fmt(row.esjd_K, 3),        bold) * " & " *
                 bf(string(round(Int, row.ess_K)),   bold) * " & " *
                 bacc_s * " \\\\"
             )
@@ -137,7 +142,7 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
             post_c = ch.samples.c[(ch.burn + 1):ch.thin:end, :]
             k_tr = Float64.(calculate_n_clusters(post_c))
             pk = [mean(k_tr .== k) for k in ks]
-            push!(method_labels, "$(row.birth)/$(row.fdim)")
+            push!(method_labels, "$(legend_name(row.birth))/$(row.fdim)")
             pk_matrix = vcat(pk_matrix, pk')
         end
 
@@ -222,7 +227,7 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
             alpha_tr = ch.samples.α_ddcrp[(ch.burn + 1):ch.thin:end]
             col = method_colour(row.birth, row.fdim)
             ls = method_style(row.fdim)
-            lbl = "$(row.birth)/$(row.fdim)"
+            lbl = "$(legend_name(row.birth))/$(row.fdim)"
             plot!(p_k, k_tr; label=lbl, color=col, linestyle=ls, alpha=0.7, linewidth=0.9)
             plot!(p_alpha, alpha_tr; label=lbl, color=col, linestyle=ls, alpha=0.7, linewidth=0.9)
         end
@@ -236,3 +241,14 @@ for (sname, sim) in [("overlapping", SIM_OVERLAPPING)]
 end
 
 println("Analysis complete. Figures and tables in: $OUTDIR")
+
+# ── Copy the paper's Poisson assets (Supplementary Section S5) ───────────────
+let paper = joinpath(@__DIR__, "..", "docs", "ddcrp-paper"), sdir = joinpath(OUTDIR, "overlapping")
+    for (src, dst) in [joinpath(sdir, "figures", "pk_distribution.png") => joinpath("figures", "pk_distribution.png"),
+                       joinpath(sdir, "figures", "data_overview.png") => joinpath("figures", "data_overview.png"),
+                       joinpath(sdir, "figures", "k_alpha_traces.png") => joinpath("figures", "k_alpha_traces.png"),
+                       joinpath(sdir, "table_overlapping.tex") => joinpath("tables", "table_overlapping.tex")]
+        isfile(src) ? cp(src, joinpath(paper, dst); force = true) : @warn "Not found, not copied: $src"
+    end
+    println("Paper assets copied to $paper/{figures,tables}/")
+end

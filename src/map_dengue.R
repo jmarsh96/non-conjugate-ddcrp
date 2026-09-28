@@ -9,8 +9,8 @@
 # maps live here rather than in the analyse script.
 #
 # Produces, in results/real_data/dengue/figures/ (dengue_test/ under
-# --test), and copies to docs/paper/figures/ unless --test:
-#   dengue_maps.png             observed incidence | fitted cluster incidence,
+# --test), and copies to docs/ddcrp-paper/figures/ unless --test:
+#   dengue_maps.png             observed incidence | posterior mean incidence,
 #                               on one shared colour scale, with the mode
 #                               partition drawn as cluster boundaries
 #   dengue_map_uncertainty.png  mean posterior co-clustering probability of
@@ -94,18 +94,19 @@ base_theme <- theme_minimal(base_size = 13) +
         plot.title = element_text(size = 13, hjust = 0.5))
 
 # ---------------------------------------------------------------------------
-# 1. Observed and fitted incidence, on one shared scale
+# 1. Observed and posterior mean incidence, on one shared scale
 #
-# With tens of clusters a discrete palette is unreadable, so the cluster map is
-# filled by each cluster's fitted incidence on exactly the scale used for the
-# observed map, and the partition is drawn as white boundaries. The two panels
-# then compare directly.
+# Each municipality is filled by its posterior mean incidence E[rho_{z_i} | y],
+# averaged over every draw of every chain, so the fitted map does not depend on
+# any single partition, whose co-clustering support is weak. The mode partition
+# is overlaid as white boundaries for reference. Both panels share one scale
+# and compare directly.
 # ---------------------------------------------------------------------------
 
 ord <- cl %>% group_by(cluster) %>%
   summarise(rho = median(rho_mean, na.rm = TRUE), n = n(), .groups = "drop") %>%
   arrange(rho)
-map_df$log_rho <- log10(ord$rho[match(map_df$cluster, ord$cluster)])
+map_df$log_rho <- log10(map_df$rho_mean)
 lims <- range(c(map_df$log_incidence, map_df$log_rho), na.rm = TRUE)
 
 inc_scale <- list(
@@ -118,7 +119,7 @@ p_obs <- ggplot(map_df) + fill_layer("log_incidence") + inc_scale +
   labs(title = "Observed incidence") + base_theme
 
 p_fit <- ggplot(map_df) + fill_layer("log_rho", border = NA) + inc_scale +
-  labs(title = "Fitted cluster incidence (mode partition)")
+  labs(title = "Posterior mean incidence")
 if (!is.null(polys)) {
   bounds <- map_df %>% filter(!is.na(cluster)) %>% group_by(cluster) %>%
     summarise(.groups = "drop")
@@ -141,11 +142,13 @@ invisible(dev.off())
 # 2. Clustering uncertainty
 # ---------------------------------------------------------------------------
 
+# Singletons have no other members, so the statistic is undefined for them;
+# they are drawn in grey rather than left to read as a low value.
 p_unc <- ggplot(map_df) + fill_layer("cocluster_confidence") +
-  scale_fill_viridis_c(option = "magma", limits = c(0, 1), na.value = "white",
+  scale_fill_viridis_c(option = "magma", limits = c(0, 1), na.value = "grey70",
                        name = "co-clustering probability",
                        guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
-  scale_colour_viridis_c(option = "magma", limits = c(0, 1), na.value = "white",
+  scale_colour_viridis_c(option = "magma", limits = c(0, 1), na.value = "grey70",
                          name = "co-clustering probability",
                        guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
   base_theme
@@ -156,9 +159,9 @@ cat("\nCluster summary (ordered by fitted incidence):\n")
 print(as.data.frame(ord %>% mutate(rho = round(rho, 1))))
 
 if (is_test) {
-  cat("\n--test: maps left in ", figdir, " (docs/paper/ untouched)\n", sep = "")
+  cat("\n--test: maps left in ", figdir, " (docs/ddcrp-paper/ untouched)\n", sep = "")
 } else {
-  paper_figs <- file.path(repo, "docs", "paper", "figures")
+  paper_figs <- file.path(repo, "docs", "ddcrp-paper", "figures")
   file.copy(c(maps_file, unc_file), paper_figs, overwrite = TRUE)
   cat("\nMaps written to ", figdir, " and copied to ", paper_figs, "\n", sep = "")
 }

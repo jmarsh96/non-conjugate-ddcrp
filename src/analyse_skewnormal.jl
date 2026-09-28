@@ -7,7 +7,16 @@ include(joinpath(@__DIR__, "skewnormal_model.jl"))
 
 ENV["GKSwstype"] = "nul"   # headless GR
 
-const OUTDIR = joinpath(@__DIR__, "..", "results", "simulation_study", "skewnormal")
+# Reads the pooled summaries written by run_skewnormal.jl (summary_final_*.csv,
+# one row per config over all seeds) for the tables and the P(K) figure, and the
+# first seed's saved chain for the trace and parameter-recovery figures. Unless
+# --test, copies the paper's skew-normal figures and tables into
+# docs/ddcrp-paper/{figures,tables}/, including the prior-recovery table from
+# geweke_skewnormal.jl when it exists.
+const IS_TEST = "--test" in ARGS
+const OUTDIR = joinpath(@__DIR__, "..", "results", "simulation_study",
+                        IS_TEST ? "skewnormal_test" : "skewnormal")
+const PAPER = joinpath(@__DIR__, "..", "docs", "ddcrp-paper")
 const K_TRUE = 3
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
@@ -26,19 +35,27 @@ function generate_latex_table(scenario_name::String, df::DataFrame, outdir::Stri
 
     lines = String[]
     push!(lines, "% Required packages: booktabs")
-    push!(lines, "% Generated automatically — re-run analyse_skewnormal.jl to update")
-    push!(lines, "% Per-parameter birth family comparison; ESS columns are median over observations.")
+    push!(lines, "% Generated automatically; re-run analyse_skewnormal.jl to update")
+    push!(lines, "% Pooled over seeds: P(K=K*) with its Monte Carlo SE (spread of the per-seed")
+    push!(lines, "% estimates), split-R-hat of K across seeds, and ESS columns as means per chain")
+    push!(lines, "% (parameter ESS: median over observations).")
     push!(lines, "")
-    push!(lines, "\\begin{tabular}{l l l l r r r r r r r}")
+    # ESJD(K) is the selection criterion and ESS(K) is reported beside it; the
+    # mean ARI is quoted in the text instead.
+    push!(lines, "\\begin{tabular}{l l l l r r r r r r r r r}")
     push!(lines, "  \\toprule")
-    push!(lines, "  \$\\xi\$ & \$\\omega\$ & \$\\alpha\$ & Fixed-dim & \$P(K{=}K^*)\$ & Mean ARI " *
-                 "& ESS\$_\\xi\$ & ESS\$_\\omega\$ & ESS\$_\\alpha\$ & Birth (\\%) & Fixed (\\%) \\\\")
+    push!(lines, "  \$\\xi\$ & \$\\omega\$ & \$\\kappa\$ & Fixed-dim & \$P(K{=}K^*)\$ & \$\\hat{R}(K)\$ & ESJD\$(K)\$ & ESS\$(K)\$ " *
+                 "& ESS\$_\\xi\$ & ESS\$_\\omega\$ & ESS\$_\\kappa\$ & Birth (\\%) & Fixed (\\%) \\\\")
     push!(lines, "  \\midrule")
-    for row in eachrow(d)
+    for (i, row) in enumerate(eachrow(d))
+        # A rule between the No Update and Resample blocks.
+        i > 1 && row.fdim != d.fdim[i-1] && push!(lines, "  \\midrule")
         push!(lines, "  " *
             FAM_TEX[row.fam_ξ] * " & " * FAM_TEX[row.fam_ω] * " & " * FAM_TEX[row.fam_α] * " & " *
-            row.fdim * " & " *
-            latex_fmt(row.prob_K_true, 3) * " & " * latex_fmt(row.mean_ari, 3) * " & " *
+            (row.fdim == "resample" ? "Resample" : "No Update") * " & " *
+            latex_fmt(row.prob_K_true, 2) * " (" * latex_fmt(row.prob_K_true_se, 2) * ") & " *
+            latex_fmt(row.rhat_K, 2) * " & " * latex_fmt(row.esjd_K, 3) * " & " *
+            string(round(Int, row.ess_K)) * " & " *
             string(round(Int, row.med_ess_ξ)) * " & " * string(round(Int, row.med_ess_ω)) * " & " *
             string(round(Int, row.med_ess_α)) * " & " *
             latex_fmt(row.acc_birth * 100, 2) * " & " * latex_fmt(row.acc_fixed * 100, 1) * " \\\\")
@@ -92,12 +109,9 @@ for sname in ["overlapping", "separated"]
         for fd in ["none", "resample"]
             sub = filter(r -> r.fdim == fd, final_df)
             labs = String[]; pk_mat = Matrix{Float64}(undef, 0, length(ks))
+            # Pooled over every seed, from the pk_k columns of the summary.
             for row in eachrow(sub)
-                haskey(chains, row.label) || continue
-                ch = chains[row.label]
-                pc = ch.samples.c[(ch.burn + 1):ch.thin:end, :]
-                ktr = Float64.(calculate_n_clusters(pc))
-                pk_mat = vcat(pk_mat, [mean(ktr .== k) for k in ks]')
+                pk_mat = vcat(pk_mat, [row[Symbol("pk_$k")] for k in ks]')
                 push!(labs, row.birth)
             end
             p = groupedbar(pk_mat'; bar_position=:dodge,
@@ -182,7 +196,7 @@ for sname in ["overlapping", "separated"]
             panels = Any[]
             for (pi, psym) in enumerate((:ξ, :ω, :α))
                 pmat = getfield(ch.samples, psym)[keep, :]
-                p = plot(xlabel="True cluster", ylabel=string(psym), legend=false,
+                p = plot(xlabel="True cluster", ylabel=(psym === :α ? "κ (shape)" : string(psym)), legend=false,
                          tickfontsize=9, guidefontsize=11, xticks=(1:K_TRUE, string.(1:K_TRUE)))
                 for k in 1:K_TRUE
                     idx = findfirst(==(k), true_labels)
@@ -203,3 +217,28 @@ for sname in ["overlapping", "separated"]
 end
 
 println("Analysis complete. Figures and tables in: $OUTDIR")
+
+# ── Copy the paper's skew-normal assets ──────────────────────────────────────
+if IS_TEST
+    println("--test: paper assets left in $OUTDIR (docs/ddcrp-paper/ untouched).")
+else
+    copies = Pair{String,String}[]
+    for sname in ["overlapping", "separated"]
+        sdir = joinpath(OUTDIR, sname)
+        push!(copies,
+            joinpath(sdir, "figures", "pk_distribution.png") => joinpath("figures", "skew_pk_$sname.png"),
+            joinpath(sdir, "figures", "data_overview.png") => joinpath("figures", "skew_data_overview_$sname.png"),
+            joinpath(sdir, "table_$sname.tex") => joinpath("tables", "table_skew_$sname.tex"))
+    end
+    push!(copies,
+        joinpath(OUTDIR, "separated", "figures", "param_recovery.png") => joinpath("figures", "skew_param_recovery.png"),
+        joinpath(OUTDIR, "geweke", "table_geweke.tex") => joinpath("tables", "table_skew_geweke.tex"))
+    for (src, dst) in copies
+        if isfile(src)
+            cp(src, joinpath(PAPER, dst); force = true)
+        else
+            @warn "Not found, not copied: $src"
+        end
+    end
+    println("Paper assets copied to $PAPER/{figures,tables}/")
+end
