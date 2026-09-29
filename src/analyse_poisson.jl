@@ -244,11 +244,17 @@ println("Analysis complete. Figures and tables in: $OUTDIR")
 
 # ── Copy the paper's Poisson assets (Supplementary Section S5) ───────────────
 let paper = joinpath(@__DIR__, "..", "docs", "ddcrp-paper"), sdir = joinpath(OUTDIR, "overlapping")
-    for (src, dst) in [joinpath(sdir, "figures", "pk_distribution.png") => joinpath("figures", "pk_distribution.png"),
-                       joinpath(sdir, "figures", "data_overview.png") => joinpath("figures", "data_overview.png"),
-                       joinpath(sdir, "figures", "k_alpha_traces.png") => joinpath("figures", "k_alpha_traces.png"),
-                       joinpath(sdir, "table_overlapping.tex") => joinpath("tables", "table_overlapping.tex")]
-        isfile(src) ? cp(src, joinpath(paper, dst); force = true) : @warn "Not found, not copied: $src"
+    # docs/ is git-ignored, so a cluster checkout has no paper directory: the
+    # assets then stay in results/ and are copied when the script is rerun locally.
+    if !isdir(paper)
+        println("No paper directory at $paper (docs/ is git-ignored): assets left in $OUTDIR.")
+    else
+        for (src, dst) in [joinpath(sdir, "figures", "pk_distribution.png") => joinpath("figures", "pk_distribution.png"),
+                           joinpath(sdir, "figures", "data_overview.png") => joinpath("figures", "data_overview.png"),
+                           joinpath(sdir, "figures", "k_alpha_traces.png") => joinpath("figures", "k_alpha_traces.png"),
+                           joinpath(sdir, "table_overlapping.tex") => joinpath("tables", "table_overlapping.tex")]
+            isfile(src) ? cp(src, joinpath(paper, dst); force = true) : @warn "Not found, not copied: $src"
+        end
+        println("Paper assets copied to $paper/{figures,tables}/")
     end
-    println("Paper assets copied to $paper/{figures,tables}/")
 end

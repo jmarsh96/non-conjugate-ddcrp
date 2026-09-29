@@ -482,8 +482,12 @@ end
 # Copy the paper assets
 # ============================================================================
 
+# docs/ is git-ignored, so a cluster checkout has no paper directory: the
+# assets then stay in results/ and are copied when the script is rerun locally.
 if IS_TEST
     println("\n--test: paper assets left in $OUTDIR (docs/ddcrp-paper/ untouched).")
+elseif !isdir(PAPER)
+    println("\nNo paper directory at $PAPER (docs/ is git-ignored): assets left in $OUTDIR.")
 else
     for f in ("dengue_k_traces.png", "dengue_ppc.png")
         cp(joinpath(FIGDIR, f), joinpath(PAPER, "figures", f); force = true)

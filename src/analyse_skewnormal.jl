@@ -183,7 +183,9 @@ for sname in ["overlapping", "separated"]
     # ── Figure 4: parameter recovery (best ESS(K) variant, K=K* draws) ───────
     println("  Generating parameter recovery figure...")
     let
-        cand = filter(r -> haskey(chains, r.label), collect(eachrow(final_df)))
+        # No Update only: the Resample chains fail to mix across partitions, so
+        # their ESS(K) overstates how well they explore the posterior.
+        cand = filter(r -> haskey(chains, r.label) && r.fdim == "none", collect(eachrow(final_df)))
         if isempty(cand)
             @warn "No chains available for parameter recovery"
         else
@@ -219,8 +221,12 @@ end
 println("Analysis complete. Figures and tables in: $OUTDIR")
 
 # ── Copy the paper's skew-normal assets ──────────────────────────────────────
+# docs/ is git-ignored, so a cluster checkout has no paper directory: the
+# assets then stay in results/ and are copied when the script is rerun locally.
 if IS_TEST
     println("--test: paper assets left in $OUTDIR (docs/ddcrp-paper/ untouched).")
+elseif !isdir(PAPER)
+    println("No paper directory at $PAPER (docs/ is git-ignored): assets left in $OUTDIR.")
 else
     copies = Pair{String,String}[]
     for sname in ["overlapping", "separated"]

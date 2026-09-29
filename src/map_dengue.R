@@ -160,6 +160,9 @@ print(as.data.frame(ord %>% mutate(rho = round(rho, 1))))
 
 if (is_test) {
   cat("\n--test: maps left in ", figdir, " (docs/ddcrp-paper/ untouched)\n", sep = "")
+} else if (!dir.exists(file.path(repo, "docs", "ddcrp-paper", "figures"))) {
+  # docs/ is git-ignored, so a cluster checkout has no paper directory.
+  cat("\nNo docs/ddcrp-paper/figures (docs/ is git-ignored): maps left in ", figdir, "\n", sep = "")
 } else {
   paper_figs <- file.path(repo, "docs", "ddcrp-paper", "figures")
   file.copy(c(maps_file, unc_file), paper_figs, overwrite = TRUE)
