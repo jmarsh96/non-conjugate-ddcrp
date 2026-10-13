@@ -1,25 +1,7 @@
-# ============================================================================
-# skewnormal_model.jl
-#
-# SkewNormal cluster model for the ddCRP RJMCMC framework — a genuinely
-# 3-parameter, FULLY non-conjugate likelihood (no marginalisation possible).
-#
-#   y_i | ξ_k, ω_k, α_k ~ SkewNormal(ξ_k, ω_k, α_k)   for obs i in cluster k
-#     ξ_k ~ Normal(ξ_m, ξ_s)          location, support ℝ
-#     ω_k ~ InverseGamma(ω_a, ω_b)    scale,    support (0, ∞)
-#     α_k ~ Normal(α_m, α_s)          skew,     support ℝ
-#
-# Cluster parameters (ξ, ω, α) are all retained in the state and sampled
-# explicitly: birth/death via RJMCMC, within-cluster via Metropolis–Hastings.
-#
-# This file is PROTOTYPED IN THE ANALYSIS REPO (per the user's instruction) by
-# adding methods to DistanceDependentCRP's exported generic functions via
-# multiple dispatch; it is intended to be upstreamed into the package later.
-# It follows the interface exercised by `poisson_cluster_rates.jl` (full RJMCMC
-# birth/death + per-observation sample extraction) and `gamma_cluster_shape_marg.jl`
-# (non-conjugate MH within-cluster updates), extended to a 3-parameter cluster
-# via the package's NamedTuple-of-dicts / MixedProposal machinery.
-# ============================================================================
+# Skew-normal cluster model for the ddCRP RJMCMC framework:
+#   y_i | ξ_k, ω_k, α_k ~ SkewNormal(ξ_k, ω_k, α_k)
+#   ξ_k ~ Normal(ξ_m, ξ_s),  ω_k ~ InverseGamma(ω_a, ω_b),  α_k ~ Normal(α_m, α_s)
+# Adds methods to DistanceDependentCRP's generic functions.
 
 using DistanceDependentCRP
 using Distributions, Statistics, StatsBase, Random
@@ -27,28 +9,14 @@ using Distributions, Statistics, StatsBase, Random
 import DistanceDependentCRP: cluster_param_dicts, table_contribution, posterior,
     update_params!, sample_birth_params, birth_params_logpdf,
     sample_birth_param, birth_param_logpdf,
-    initialise_state, allocate_samples, extract_samples!, posterior_predictive
+    initialise_state, allocate_samples, extract_samples!
 
 const DD = DistanceDependentCRP
 
-# ============================================================================
 # Types
-# ============================================================================
 
-"""
-    SkewNormalClusters <: LikelihoodModel
-
-SkewNormal model with explicit cluster-specific location (ξ), scale (ω) and
-skew (α) parameters. Fully non-conjugate — no baseline Gibbs sampler exists.
-"""
 struct SkewNormalClusters <: LikelihoodModel end
 
-"""
-    SkewNormalClustersState{T} <: AbstractMCMCState{T}
-
-Fields: assignments `c`, and one `Dict{Vector{Int},T}` (sorted table → scalar)
-per cluster parameter (`ξ_dict`, `ω_dict`, `α_dict`).
-"""
 mutable struct SkewNormalClustersState{T<:Real} <: AbstractMCMCState{T}
     c::Vector{Int}
     ξ_dict::Dict{Vector{Int}, T}
@@ -56,13 +24,7 @@ mutable struct SkewNormalClustersState{T<:Real} <: AbstractMCMCState{T}
     α_dict::Dict{Vector{Int}, T}
 end
 
-"""
-    SkewNormalClustersPriors{T} <: AbstractPriors
-
-- `ξ_m, ξ_s`: Normal prior on location ξ
-- `ω_a, ω_b`: InverseGamma(shape, scale) prior on scale ω
-- `α_m, α_s`: Normal prior on skew α
-"""
+# Normal priors on ξ and α, InverseGamma(shape, scale) on ω.
 struct SkewNormalClustersPriors{T<:Real} <: AbstractPriors
     ξ_m::T; ξ_s::T
     ω_a::T; ω_b::T
@@ -79,13 +41,7 @@ function SkewNormalClustersPriors(;
     SkewNormalClustersPriors{T}(T(ξ_m), T(ξ_s), T(ω_a), T(ω_b), T(α_m), T(α_s))
 end
 
-"""
-    SkewNormalClustersSamples{T} <: AbstractMCMCSamples
-
-Per-observation matrices `ξ`, `ω`, `α` (each obs stores its cluster's value),
-plus `c`, `logpost`, `α_ddcrp`, `s_ddcrp`. The ξ/ω/α matrices are auto-discovered
-by `get_parameter_fields` so diagnostics (ESS, etc.) work with no extra wiring.
-"""
+# Per-observation matrices `ξ`, `ω`, `α`, plus `c`, `logpost`, `α_ddcrp`, `s_ddcrp`.
 struct SkewNormalClustersSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     ξ::Matrix{T}
@@ -96,19 +52,10 @@ struct SkewNormalClustersSamples{T<:Real} <: AbstractMCMCSamples
     s_ddcrp::Vector{T}
 end
 
-# ============================================================================
-# Method-of-moments SkewNormal fit (used by moment-matching proposals + init)
-# ============================================================================
+# Method-of-moments skew-normal fit (moment-matching proposals and initialisation)
 
-"""
-    fit_skewnormal_moments(ys; min_size=4) -> (ξ, ω, α) or nothing
-
-Method-of-moments SkewNormal estimate from the sample mean, variance and
-skewness of `ys`. The SkewNormal skewness is bounded by |γ₁| ≈ 0.9953; the
-sample skewness is clamped just below that. Returns `nothing` when there are
-too few points or the variance is non-positive (callers then fall back to the
-prior, as recommended in the paper for small moving sets).
-"""
+# Method-of-moments (ξ, ω, α) from the sample mean, variance and skewness; `nothing` when
+# there are too few points or the variance is non-positive.
 function fit_skewnormal_moments(ys; min_size::Int = 4)
     n = length(ys)
     n < min_size && return nothing
@@ -131,23 +78,17 @@ function fit_skewnormal_moments(ys; min_size::Int = 4)
     return (ξ, ω, clamp(α, -30.0, 30.0))
 end
 
-# Prior means / helpers used as fallbacks when moment matching is unavailable.
 ω_prior_mean(p::SkewNormalClustersPriors) = p.ω_a > 1 ? p.ω_b / (p.ω_a - 1) : p.ω_b
 _view_S(data, S_i) = view(observations(data), S_i)
 
-# ============================================================================
-# RJMCMC interface — parameter registry
-# ============================================================================
+# RJMCMC interface: parameter registry
 
 cluster_param_dicts(state::SkewNormalClustersState) =
     (ξ = state.ξ_dict, ω = state.ω_dict, α = state.α_dict)
 
-# ============================================================================
-# Per-parameter birth proposals (singular Val{:name} dispatch).
-# These power MixedProposal (birth) and Resample / MixedFixedDim (fixed-dim).
-# ============================================================================
+# Per-parameter birth proposals (used by MixedProposal, Resample and MixedFixedDim)
 
-# ---- PriorProposal (all three parameters) ----------------------------------
+# PriorProposal
 function sample_birth_param(::SkewNormalClusters, ::Val{:ξ}, ::PriorProposal,
         S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
     Q = Normal(priors.ξ_m, priors.ξ_s); v = rand(Q); return v, logpdf(Q, v)
@@ -172,23 +113,16 @@ birth_param_logpdf(::SkewNormalClusters, ::Val{:α}, ::PriorProposal, v, S_i,
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
     logpdf(Normal(priors.α_m, priors.α_s), v)
 
-# ---- Moment-matched proposals ----------------------------------------------
-# Every moment-matched proposal centres on the method-of-moments fit of the
-# moving set, which needs at least MM_MIN_SIZE observations. Below that (or when
-# the fit fails, e.g. all observations equal) the proposals fall back as the
-# paper describes: the location is centred on the moving-set mean, which is
-# y_i itself for a singleton, and the scale and shape are drawn from their
-# priors, since one or two observations say almost nothing about them.
+# Moment-matched proposals. Below MM_MIN_SIZE observations (or when the fit fails) ξ is
+# centred on the moving-set mean and ω, α are drawn from their priors.
 const MM_MIN_SIZE = 3
 _mm_est(S_i, data) = length(S_i) >= MM_MIN_SIZE ?
     fit_skewnormal_moments(_view_S(data, S_i); min_size = MM_MIN_SIZE) : nothing
 
-# The draw and density used when the scale or shape falls back to its prior.
 _prior_dist(::Val{:ω}, priors) = InverseGamma(priors.ω_a, priors.ω_b)
 _prior_dist(::Val{:α}, priors) = Normal(priors.α_m, priors.α_s)
 
-# ---- NormalMomentMatch for the location ξ ------------------------------------
-# Natural scale, |det J| = 1.
+# NormalMomentMatch for ξ
 function _nmm_xi_dist(prop, S_i, data)
     est = _mm_est(S_i, data)
     centre = isnothing(est) ? mean(_view_S(data, S_i)) : est[1]
@@ -202,8 +136,7 @@ birth_param_logpdf(::SkewNormalClusters, ::Val{:ξ}, prop::NormalMomentMatch, x,
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
     logpdf(_nmm_xi_dist(prop, S_i, data), x)
 
-# ---- NormalMomentMatch for the shape α ---------------------------------------
-# Natural scale, |det J| = 1; prior below MM_MIN_SIZE.
+# NormalMomentMatch for α
 function _nmm_alpha_dist(prop, S_i, data, priors)
     est = _mm_est(S_i, data)
     return isnothing(est) ? _prior_dist(Val(:α), priors) : Normal(est[3], prop.σ[1])
@@ -216,9 +149,7 @@ birth_param_logpdf(::SkewNormalClusters, ::Val{:α}, prop::NormalMomentMatch, x,
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors) =
     logpdf(_nmm_alpha_dist(prop, S_i, data, priors), x)
 
-# ---- NormalMomentMatch for the positive scale ω (truncated) ------------------
-# Normal centred at the MoM scale estimate, truncated to (0, ∞); prior below
-# MM_MIN_SIZE.
+# NormalMomentMatch for ω, truncated to (0, ∞)
 function _nmm_omega_dist(prop, S_i, data, priors)
     est = _mm_est(S_i, data)
     isnothing(est) && return _prior_dist(Val(:ω), priors)
@@ -234,9 +165,7 @@ function birth_param_logpdf(::SkewNormalClusters, ::Val{:ω}, prop::NormalMoment
     return logpdf(_nmm_omega_dist(prop, S_i, data, priors), v)
 end
 
-# ---- LogNormalMomentMatch for the positive scale ω ---------------------------
-# log(ω') ~ Normal(log ω̂, σ); Jacobian −log(ω') on the natural scale. Prior
-# below MM_MIN_SIZE.
+# LogNormalMomentMatch for ω: log(ω') ~ Normal(log ω̂, σ)
 function sample_birth_param(::SkewNormalClusters, ::Val{:ω}, prop::LogNormalMomentMatch,
         S_i, state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
     est = _mm_est(S_i, data)
@@ -256,8 +185,7 @@ function birth_param_logpdf(::SkewNormalClusters, ::Val{:ω}, prop::LogNormalMom
     return logpdf(Normal(μ, prop.σ[1]), log(ω)) - log(ω)
 end
 
-# ---- InverseGammaMomentMatch for the positive scale ω ------------------------
-# InverseGamma(a, ω̂(a-1)) has mean ω̂ and CV 1/√(a-2); prior below MM_MIN_SIZE.
+# InverseGammaMomentMatch for ω: InverseGamma(a, ω̂(a-1)) has mean ω̂
 const _IG_OMEGA_SHAPE = 5.0
 function _ig_omega_dist(prop::InverseGammaMomentMatch, S_i, data, priors::SkewNormalClustersPriors)
     est = _mm_est(S_i, data)
@@ -274,10 +202,7 @@ function birth_param_logpdf(::SkewNormalClusters, ::Val{:ω}, prop::InverseGamma
     return logpdf(_ig_omega_dist(prop, S_i, data, priors), v)
 end
 
-# ============================================================================
-# Whole-vector birth proposal for PriorProposal (MixedProposal is auto-composed
-# from the singular methods above by the @generated dispatch in the package).
-# ============================================================================
+# Whole-vector birth proposal for PriorProposal
 
 function sample_birth_params(m::SkewNormalClusters, ::PriorProposal, S_i,
         state::SkewNormalClustersState, data, priors::SkewNormalClustersPriors)
@@ -293,13 +218,9 @@ function birth_params_logpdf(m::SkewNormalClusters, ::PriorProposal, params_old,
            birth_param_logpdf(m, Val(:α), PriorProposal(), params_old.α, S_i, state, data, priors)
 end
 
-# ============================================================================
 # Table contribution and posterior
-# ============================================================================
 
-# Switch for the prior-recovery (Geweke) check in `geweke_skewnormal.jl`: with
-# the likelihood off the target is the prior, which every sampler must recover
-# whatever its proposals, since those still use the data.
+# Switched off by geweke_skewnormal.jl so that the target is the prior.
 const LIKELIHOOD_ON = Ref(true)
 
 function table_contribution(::SkewNormalClusters, table::AbstractVector{Int},
@@ -322,11 +243,9 @@ function posterior(model::SkewNormalClusters, data, state::SkewNormalClustersSta
            DD.ddcrp_contribution(state.c, log_DDCRP)
 end
 
-# ============================================================================
-# Within-cluster Metropolis–Hastings updates (fixed partition)
-# ============================================================================
+# Within-cluster Metropolis-Hastings updates
 
-# ξ: random walk on the natural scale (support ℝ), no Jacobian.
+# ξ: random walk on the natural scale.
 function _update_location!(model, table, state, data, priors, prop_sd)
     old = state.ξ_dict[table]
     lp_old = table_contribution(model, table, state, data, priors)
@@ -335,7 +254,7 @@ function _update_location!(model, table, state, data, priors, prop_sd)
     log(rand()) >= lp_new - lp_old && (state.ξ_dict[table] = old)
 end
 
-# ω: random walk on the log scale (support (0,∞)), Jacobian log(ω')−log(ω).
+# ω: random walk on the log scale.
 function _update_scale!(model, table, state, data, priors, prop_sd)
     old = state.ω_dict[table]
     log_old = log(old)
@@ -346,7 +265,7 @@ function _update_scale!(model, table, state, data, priors, prop_sd)
     log(rand()) >= lp_new - lp_old + (log_new - log_old) && (state.ω_dict[table] = old)
 end
 
-# α: random walk on the natural scale (support ℝ), no Jacobian.
+# α: random walk on the natural scale.
 function _update_skew!(model, table, state, data, priors, prop_sd)
     old = state.α_dict[table]
     lp_old = table_contribution(model, table, state, data, priors)
@@ -365,9 +284,7 @@ function update_params!(model::SkewNormalClusters, state::SkewNormalClustersStat
     end
 end
 
-# ============================================================================
 # Initialisation and sample extraction
-# ============================================================================
 
 function initialise_state(::SkewNormalClusters, data, ddcrp_params::DDCRPParams,
         priors::SkewNormalClustersPriors)
@@ -421,43 +338,4 @@ function extract_samples!(::SkewNormalClusters, state::SkewNormalClustersState,
             samples.α[iter, i] = αv
         end
     end
-end
-
-# ============================================================================
-# Model comparison and posterior predictive (see `model_comparison.jl`)
-# ============================================================================
-
-"""
-    loglik_matrix(::SkewNormalClusters, samples, data) -> Matrix
-
-`(n_draws × n_obs)` matrix of `log p(y_i | ξ^(s)_i, ω^(s)_i, α^(s)_i)`, the input
-WAIC, LPML and PSIS-LOO are computed from. Pass an already-thinned samples object.
-"""
-function loglik_matrix(::SkewNormalClusters, samples::SkewNormalClustersSamples, data)
-    y = observations(data)
-    S, n = size(samples.ξ)
-    ll = Matrix{Float64}(undef, S, n)
-    for i in 1:n, s in 1:S
-        ω = samples.ω[s, i]
-        ll[s, i] = ω > 0 ? logpdf(SkewNormal(samples.ξ[s, i], ω, samples.α[s, i]), y[i]) : -Inf
-    end
-    return ll
-end
-
-"""
-    posterior_predictive(::SkewNormalClusters, samples, data; n_rep=nothing)
-
-Draw one replicate dataset `y_rep` per retained posterior draw from that draw's
-per-observation (ξ, ω, α). Returns an `(n_draws × n_obs)` matrix.
-"""
-function posterior_predictive(::SkewNormalClusters, samples::SkewNormalClustersSamples,
-        data; n_rep::Union{Nothing,Int} = nothing)
-    S, n = size(samples.ξ)
-    draws = isnothing(n_rep) ? (1:S) : round.(Int, range(1, S; length = min(n_rep, S)))
-    y_rep = zeros(length(draws), n)
-    for (s_idx, s) in enumerate(draws), i in 1:n
-        y_rep[s_idx, i] = rand(SkewNormal(samples.ξ[s, i], max(samples.ω[s, i], 1e-8),
-                                          samples.α[s, i]))
-    end
-    return y_rep
 end

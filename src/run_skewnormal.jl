@@ -1,40 +1,11 @@
-# ============================================================================
-# run_skewnormal.jl
+# Skew-normal simulation study (location ξ, scale ω, shape α; no Gibbs baseline).
+# Compares birth-proposal families per parameter in a coordinate design around the baseline
+# (ξ:NMM, ω:LNMM, α:NMM), each under NoUpdate and Resample, in two scenarios over SEEDS.
 #
-# Simulation study for SkewNormal clustering — a genuinely 3-parameter, FULLY
-# non-conjugate likelihood (location ξ ∈ ℝ, scale ω > 0, skew α ∈ ℝ). There is
-# NO marginalised Gibbs baseline; correctness is judged by agreement across
-# independent chains (split-R̂ over SEEDS) and across the RJMCMC variants, and
-# by the prior-recovery check in `geweke_skewnormal.jl`.
+# Part 1 tunes the birth σ per parameter by ESJD(K) and writes tuned_sigma.csv.
+# Part 2 runs every config × scenario × seed; only the first seed's chain is saved.
 #
-# GOAL: compare every applicable birth-proposal family FOR EACH cluster parameter
-# and decide which is best per parameter.
-#   ξ (ℝ)  ∈ {Prior, NormalMM}
-#   ω (>0) ∈ {Prior, NormalMM (truncated), LogNormalMM, InverseGammaMM}
-#   α (ℝ)  ∈ {Prior, NormalMM}
-# We use a coordinate design: start from the all-moment-match baseline
-# (ξ:NMM, ω:LNMM, α:NMM) and swap each parameter's family across its options
-# while holding the other two at baseline, plus an all-Prior reference and the
-# combination the coordinate comparison recommends (ξ:NMM, ω:Prior, α:Prior).
-# Every birth config is run under both fixed-dim strategies {NoUpdate, Resample}.
-#
-# Parts:
-#   1. Tuning — the birth σ of each moment-matched parameter, one parameter at a
-#      time in the order ξ, ω, α, on the overlapping scenario (baseline birth,
-#      NoUpdate), selected by ESJD(K) averaged over two short chains. Writes
-#      summary_tune.csv and tuned_sigma.csv (read by geweke_skewnormal.jl).
-#   2. Comparison — every config × scenario × seed in SEEDS at full length.
-#      Only the first seed's chain is saved (thinned); the rest are reduced to
-#      their summaries. Writes summary_final_seeds.csv (one row per chain) and
-#      summary_final.csv (one row per config, pooled over seeds with split-R̂).
-#
-# Fixed proposal parameters, from short runs:
-#   within-cluster MH steps : prop_sds = (ξ=0.6, ω=0.15, α=1.2)   [α was the bottleneck]
-#   resample σ (NMM/LNMM)   : 0.25 for every parameter
-# (InverseGammaMM and Prior are parameter-free.)
-#
-# Two scenarios: overlapping (harder) and separated (clean recovery).
-# ============================================================================
+#   julia --project=. src/run_skewnormal.jl [--test] [--slurm] [--infer_s]
 
 using DistanceDependentCRP, CSV, DataFrames, Distances, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -45,9 +16,7 @@ const INFER_S = "--infer_s" in ARGS
 
 if USE_SLURM
     using SlurmClusterManager
-    # launch_timeout defaults to 60s, which is not enough for a wide allocation
-    # loading packages off /rds; the workers then die with "launch_timeout
-    # exceeded" before they can call home.
+    # The 60s default is too short for a wide allocation.
     addprocs(SlurmManager(launch_timeout = 300.0))
 else
     addprocs(8)
@@ -59,27 +28,20 @@ end
     include(joinpath(@__DIR__, "skewnormal_model.jl"))
 end
 
-# split_rhat lives with the dengue helpers; the file holds pure functions only.
 include(joinpath(@__DIR__, "dengue_common.jl"))
 
-# ============================================================================
 # Proposal parameters
-# ============================================================================
 
 @everywhere const PROP_SDS = (ξ = 0.6, ω = 0.15, α = 1.2)   # within-cluster MH
 const SIGMA_RESAMPLE = 0.25                                  # NMM / LNMM resample σ
 const SIGMA_START = (ξ = 1.0, ω = 1.0, α = 1.0)              # before tuning
 
-# Birth σ grids, tuned in this order. ω's σ is on the log scale for the
-# log-normal baseline; the truncated-normal ω proposal uses the same value on
-# the natural scale.
+# Birth σ grids; ω's σ is on the log scale.
 const SIGMA_GRID = IS_TEST ?
     (ξ = [1.0, 2.0], ω = [0.5, 1.0], α = [1.0, 5.0]) :
     (ξ = [0.5, 1.0, 2.0, 4.0], ω = [0.25, 0.5, 1.0], α = [1.0, 2.5, 5.0, 10.0])
 
-# ============================================================================
 # Per-parameter proposal-family builders
-# ============================================================================
 
 @everywhere function _birth_family(fam::Symbol, σ)
     fam === :prior && return PriorProposal()
@@ -99,9 +61,7 @@ end
         ω = Resample(_birth_family(fω, σr)),
         α = Resample(_birth_family(fα, σr)))) : NoUpdate()
 
-# ============================================================================
 # Unit of work
-# ============================================================================
 
 const PK_MAX = 12   # P(K = k) is recorded for k = 1..PK_MAX
 
@@ -139,12 +99,10 @@ const PK_MAX = 12   # P(K = k) is recorded for k = 1..PK_MAX
     ess_logpost = effective_sample_size(post_lp)
     esjd_K = mean(diff(Float64.(k_trace)).^2)
 
-    # Per-parameter mixing (median ESS across observations, post burn-in/thinning).
     med_ess(M) = median([effective_sample_size(M[keep, i]) for i in 1:size(M, 2)])
 
     if cfg.save_chain
-        # Save the thinned post-burn-in chain only, as burn = 0 and thin = 1,
-        # so the analysis script reads it exactly as it would a raw chain.
+        # Saved already burnt-in and thinned (burn = 0, thin = 1).
         thinned = SkewNormalClustersSamples(post_c, samples.ξ[keep, :], samples.ω[keep, :],
             samples.α[keep, :], post_lp, samples.α_ddcrp[keep], samples.s_ddcrp[keep])
         chain_dir = joinpath(cfg.outdir, cfg.scenario, "chains")
@@ -189,9 +147,7 @@ const PK_MAX = 12   # P(K = k) is recorded for k = 1..PK_MAX
     )
 end
 
-# ============================================================================
 # Constants
-# ============================================================================
 
 const N_SAMPLES = IS_TEST ? 1_500 : 110_000
 const BURN = IS_TEST ? 300 : 10_000
@@ -208,9 +164,7 @@ const SKEW_DIR = IS_TEST ? joinpath(@__DIR__, "..", "results", "simulation_study
     joinpath(@__DIR__, "..", "results", "simulation_study", "skewnormal")
 mkpath(SKEW_DIR)
 
-# ============================================================================
 # Simulate data
-# ============================================================================
 
 function make_cluster_x(n::Int, centers::Vector{Float64}, σ::Float64; seed::Int=0)
     rng = MersenneTwister(seed)
@@ -250,18 +204,13 @@ for (sname, sim) in SCENARIOS
             sname, minimum(sim.y), maximum(sim.y), string(sim.pars))
 end
 
-# ============================================================================
 # Shared model settings
-# ============================================================================
 
 const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
-# Deliberately diffuse (uninformative) priors: wide location, heavy-tailed scale
-# (InverseGamma shape 2 ⇒ infinite variance), wide skew.
+# Diffuse priors.
 const PRIORS = SkewNormalClustersPriors(ξ_m=0.0, ξ_s=50.0, ω_a=2.0, ω_b=2.0, α_m=0.0, α_s=10.0)
 
-# ============================================================================
 # Config builder
-# ============================================================================
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 
@@ -289,9 +238,7 @@ end
 # The per-chain CSVs hold scalars only.
 strip_traces(r) = Base.structdiff(r, NamedTuple{(:k_trace, :lp_trace)})
 
-# ============================================================================
 # Part 1: tune the birth σ of each moment-matched parameter
-# ============================================================================
 
 const BASE = (:nmm, :lnmm, :nmm)
 
@@ -327,9 +274,7 @@ CSV.write(joinpath(SKEW_DIR, "summary_tune.csv"), DataFrame(tune_rows))
 CSV.write(joinpath(SKEW_DIR, "tuned_sigma.csv"),
           DataFrame(param = ["ξ", "ω", "α"], σ = [SIGMA_BIRTH.ξ, SIGMA_BIRTH.ω, SIGMA_BIRTH.α]))
 
-# ============================================================================
 # Part 2: the comparison, every config × scenario × seed
-# ============================================================================
 
 # (fam_ξ, fam_ω, fam_α, "varied" descriptor)
 birth_specs = Tuple{Symbol,Symbol,Symbol,String}[
@@ -366,9 +311,7 @@ for k in 1:PK_MAX
 end
 CSV.write(joinpath(SKEW_DIR, "summary_final_seeds.csv"), df_seeds)
 
-# One row per config, pooled over seeds. P(K) is pooled over all draws; its
-# Monte Carlo standard error is the spread of the per-seed estimates, and
-# split-R̂ compares the seeds' chains. ESS columns are means per chain.
+# One row per config, pooled over seeds; the MC SE of P(K) is the per-seed spread.
 groups = Dict{Tuple{String,String}, Vector{Any}}()
 for r in results
     push!(get!(groups, (r.scenario, r.label), Any[]), r)

@@ -1,28 +1,7 @@
-# ============================================================================
-# negbin_population_model.jl
-#
-# Negative Binomial cluster model with population offsets for the ddCRP RJMCMC
-# framework — a 2-parameter, FULLY non-conjugate count likelihood.
-#
-#   y_i | ρ_k, r_k, E_i ~ NegativeBinomial(mean = E_i ρ_k, size = r_k)
-#                                                   for obs i in cluster k
-#     E_i = P_i                       exposure/offset supplied by the data
-#     ρ_k ~ Gamma(ρ_a, ρ_b)           cluster incidence rate, support (0, ∞)
-#     r_k ~ Gamma(r_a, r_b)           cluster dispersion,     support (0, ∞)
-#
-# Var(y_i) = μ_i + μ_i²/r_k, so r_k → ∞ recovers the Poisson model. With r_k
-# free, ρ_k loses its Gamma conjugacy, so BOTH cluster parameters are sampled
-# explicitly: birth/death via RJMCMC, within-cluster via Metropolis–Hastings.
-# This is the count-data analogue of `skewnormal_model.jl`, and the honest
-# non-conjugate counterpart of the package's `PoissonPopulationRates(Marg)`.
-#
-# This file is PROTOTYPED IN THE ANALYSIS REPO (per the user's instruction) by
-# adding methods to DistanceDependentCRP's exported generic functions via
-# multiple dispatch; it is intended to be upstreamed into the package later.
-# It follows the interface exercised by `poisson_population_rates.jl` (exposure
-# offsets) and `skewnormal_model.jl` (multi-parameter non-conjugate clusters via
-# the NamedTuple-of-dicts / MixedProposal machinery).
-# ============================================================================
+# Negative Binomial cluster model with population offsets for the ddCRP RJMCMC framework:
+#   y_i | ρ_k, r_k ~ NegativeBinomial(mean = E_i ρ_k, size = r_k)
+#   ρ_k ~ Gamma(ρ_a, ρ_b),  r_k ~ Gamma(r_a, r_b)
+# Both cluster parameters are non-conjugate. Adds methods to DistanceDependentCRP's generic functions.
 
 using DistanceDependentCRP
 using Distributions, Statistics, StatsBase, Random
@@ -35,39 +14,19 @@ import DistanceDependentCRP: cluster_param_dicts, table_contribution, posterior,
 
 const DD = DistanceDependentCRP
 
-# ============================================================================
 # Types
-# ============================================================================
 
-"""
-    NegBinPopulationRates <: LikelihoodModel
-
-Negative Binomial model with exposure offsets and explicit cluster-specific
-incidence (ρ) and dispersion (r) parameters. Fully non-conjugate — no baseline
-Gibbs sampler exists. Requires `CountDataWithPopulation`.
-"""
 struct NegBinPopulationRates <: LikelihoodModel end
 
 requires_population(::NegBinPopulationRates) = true
 
-"""
-    NegBinPopulationRatesState{T} <: AbstractMCMCState{T}
-
-Fields: assignments `c`, and one `Dict{Vector{Int},T}` (sorted table → scalar)
-per cluster parameter (`ρ_dict`, `r_dict`).
-"""
 mutable struct NegBinPopulationRatesState{T<:Real} <: AbstractMCMCState{T}
     c::Vector{Int}
     ρ_dict::Dict{Vector{Int}, T}
     r_dict::Dict{Vector{Int}, T}
 end
 
-"""
-    NegBinPopulationRatesPriors{T} <: AbstractPriors
-
-- `ρ_a, ρ_b`: Gamma(shape, rate) prior on the incidence rate ρ
-- `r_a, r_b`: Gamma(shape, rate) prior on the dispersion r
-"""
+# Gamma(shape, rate) priors on ρ and r.
 struct NegBinPopulationRatesPriors{T<:Real} <: AbstractPriors
     ρ_a::T; ρ_b::T
     r_a::T; r_b::T
@@ -81,19 +40,13 @@ function NegBinPopulationRatesPriors(;
     NegBinPopulationRatesPriors{T}(T(ρ_a), T(ρ_b), T(r_a), T(r_b))
 end
 
-# Gamma(shape a, rate b) — Distributions parameterises by scale, hence 1/b.
+# Distributions parameterises the Gamma by scale, hence 1/b.
 ρ_prior(p::NegBinPopulationRatesPriors) = Gamma(p.ρ_a, 1 / p.ρ_b)
 r_prior(p::NegBinPopulationRatesPriors) = Gamma(p.r_a, 1 / p.r_b)
 ρ_prior_mean(p::NegBinPopulationRatesPriors) = p.ρ_a / p.ρ_b
 r_prior_mean(p::NegBinPopulationRatesPriors) = p.r_a / p.r_b
 
-"""
-    NegBinPopulationRatesSamples{T} <: AbstractMCMCSamples
-
-Per-observation matrices `ρ`, `r` (each obs stores its cluster's value), plus
-`c`, `logpost`, `α_ddcrp`, `s_ddcrp`. The ρ/r matrices are auto-discovered by
-`get_parameter_fields` so diagnostics (ESS, etc.) work with no extra wiring.
-"""
+# Per-observation matrices `ρ`, `r`, plus `c`, `logpost`, `α_ddcrp`, `s_ddcrp`.
 struct NegBinPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     c::Matrix{Int}
     ρ::Matrix{T}
@@ -103,34 +56,14 @@ struct NegBinPopulationRatesSamples{T<:Real} <: AbstractMCMCSamples
     s_ddcrp::Vector{T}
 end
 
-# ============================================================================
-# Method-of-moments NegBin fit (used by moment-matching proposals + init)
-# ============================================================================
+# Method-of-moments NegBin fit (moment-matching proposals and initialisation)
 
-"""
-    nb_dist(μ, r) -> NegativeBinomial
-
-Mean/dispersion parameterisation: `NegativeBinomial(r, p)` with `p = r/(r+μ)`
-has mean `μ` and variance `μ + μ²/r`.
-"""
+# NegativeBinomial with mean μ and variance μ + μ²/r.
 nb_dist(μ::Real, r::Real) = NegativeBinomial(r, r / (r + μ))
 
-"""
-    fit_negbin_moments(ys, Es; min_size=3) -> (ρ, r) or nothing
-
-Method-of-moments Negative Binomial estimate for a set of counts `ys` with
-exposures `Es`:
-
-  ρ̂ = Σy / ΣE,  μ̂_i = E_i ρ̂
-  φ̂ = quasi-Poisson dispersion = (1/(m-1)) Σ (y_i - μ̂_i)² / μ̂_i
-  r̂ = mean(μ̂) / (φ̂ - 1)          since Var = μ(1 + μ/r) ⇒ φ ≈ 1 + μ/r
-
-Returns `nothing` when the set is too small, carries no exposure, or is
-**underdispersed** (φ̂ ≤ 1) — in which case r̂ would diverge. Callers then fall
-back to the prior, as recommended in the paper for small moving sets.
-`r̂` is clamped to `[0.05, 500]`: beyond the upper end the likelihood is
-numerically indistinguishable from Poisson.
-"""
+# Method-of-moments (ρ, r) for counts `ys` with exposures `Es`: ρ̂ = Σy / ΣE and
+# r̂ = mean(μ̂) / (φ̂ - 1) with φ̂ the quasi-Poisson dispersion. Returns `nothing` when the set
+# is too small or underdispersed, and callers fall back to the prior.
 function fit_negbin_moments(ys, Es; min_size::Int = 3)
     m = length(ys)
     m < min_size && return nothing
@@ -151,7 +84,6 @@ function fit_negbin_moments(ys, Es; min_size::Int = 3)
     return (ρ̂, clamp(r̂, 0.05, 500.0))
 end
 
-# Fit restricted to a moving set / table, pulling counts and exposures from data.
 function _fit_S(S_i, data, min_size::Int)
     y = observations(data)
     P = population(data)
@@ -159,23 +91,16 @@ function _fit_S(S_i, data, min_size::Int)
     return fit_negbin_moments([float(y[i]) for i in S_i], Es; min_size = min_size)
 end
 
-# Exposure for a single observation, tolerating a scalar or per-observation P.
 _exposure(data, i) = (P = population(data); P isa Real ? float(P) : float(P[i]))
 
-# ============================================================================
-# RJMCMC interface — parameter registry
-# ============================================================================
+# RJMCMC interface: parameter registry
 
 cluster_param_dicts(state::NegBinPopulationRatesState) =
     (ρ = state.ρ_dict, r = state.r_dict)
 
-# ============================================================================
-# Per-parameter birth proposals (singular Val{:name} dispatch).
-# These power MixedProposal (birth) and Resample / MixedFixedDim (fixed-dim).
-# Both ρ and r are positive, so all four proposal families apply to both.
-# ============================================================================
+# Per-parameter birth proposals (used by MixedProposal, Resample and MixedFixedDim)
 
-# ---- PriorProposal ---------------------------------------------------------
+# PriorProposal
 function sample_birth_param(::NegBinPopulationRates, ::Val{:ρ}, ::PriorProposal,
         S_i, state::NegBinPopulationRatesState, data, priors::NegBinPopulationRatesPriors)
     Q = ρ_prior(priors); v = rand(Q); return v, logpdf(Q, v)
@@ -192,17 +117,14 @@ birth_param_logpdf(::NegBinPopulationRates, ::Val{:r}, ::PriorProposal, v, S_i,
         state::NegBinPopulationRatesState, data, priors::NegBinPopulationRatesPriors) =
     (v <= 0 ? -Inf : logpdf(r_prior(priors), v))
 
-# ---- Moment-matched centres ------------------------------------------------
-# Each family targets the same MoM estimate; they differ only in proposal shape.
-# Falling back to the prior mean keeps the proposal proper when the fit fails.
+# Moment-matched centres; the prior mean is the fallback when the fit fails.
 _mm_centre(::Val{:ρ}, est, priors) = isnothing(est) ? ρ_prior_mean(priors) : est[1]
 _mm_centre(::Val{:r}, est, priors) = isnothing(est) ? r_prior_mean(priors) : est[2]
 
 _mm_est(prop, S_i, data) = _fit_S(S_i, data, prop.min_size)
-# NormalMomentMatch carries no min_size field; use the package default of 3.
 _mm_est(::NormalMomentMatch, S_i, data) = _fit_S(S_i, data, 3)
 
-# ---- NormalMomentMatch (truncated to (0, ∞) for positivity) ----------------
+# NormalMomentMatch (truncated to (0, ∞))
 for P in (:ρ, :r)
     @eval function sample_birth_param(::NegBinPopulationRates, v::Val{$(QuoteNode(P))},
             prop::NormalMomentMatch, S_i, state::NegBinPopulationRatesState, data,
@@ -220,8 +142,7 @@ for P in (:ρ, :r)
     end
 end
 
-# ---- LogNormalMomentMatch --------------------------------------------------
-# log(θ') ~ Normal(log θ̂, σ); Jacobian −log(θ') on the natural scale.
+# LogNormalMomentMatch: log(θ') ~ Normal(log θ̂, σ)
 for P in (:ρ, :r)
     @eval function sample_birth_param(::NegBinPopulationRates, v::Val{$(QuoteNode(P))},
             prop::LogNormalMomentMatch, S_i, state::NegBinPopulationRatesState, data,
@@ -239,10 +160,7 @@ for P in (:ρ, :r)
     end
 end
 
-# ---- InverseGammaMomentMatch -----------------------------------------------
-# InverseGamma(a, θ̂(a-1)) has mean θ̂ (paper §2.5.1.2 — same target as the
-# log-normal variant, different proposal family). `a` sets the spread
-# (CV = 1/√(a-2)); the birth/death MH ratio corrects any mismatch exactly.
+# InverseGammaMomentMatch: InverseGamma(a, θ̂(a-1)) has mean θ̂.
 const _IG_SHAPE = 5.0
 for P in (:ρ, :r)
     @eval function _ig_dist(v::Val{$(QuoteNode(P))}, prop::InverseGammaMomentMatch, S_i,
@@ -265,10 +183,7 @@ for P in (:ρ, :r)
     end
 end
 
-# ============================================================================
-# Whole-vector birth proposal for PriorProposal (MixedProposal is auto-composed
-# from the singular methods above by the @generated dispatch in the package).
-# ============================================================================
+# Whole-vector birth proposal for PriorProposal
 
 function sample_birth_params(m::NegBinPopulationRates, ::PriorProposal, S_i,
         state::NegBinPopulationRatesState, data, priors::NegBinPopulationRatesPriors)
@@ -282,9 +197,7 @@ function birth_params_logpdf(m::NegBinPopulationRates, ::PriorProposal, params_o
            birth_param_logpdf(m, Val(:r), PriorProposal(), params_old.r, S_i, state, data, priors)
 end
 
-# ============================================================================
 # Table contribution and posterior
-# ============================================================================
 
 function table_contribution(::NegBinPopulationRates, table::AbstractVector{Int},
         state::NegBinPopulationRatesState, data, priors::NegBinPopulationRatesPriors)
@@ -309,12 +222,8 @@ function posterior(model::NegBinPopulationRates, data, state::NegBinPopulationRa
            DD.ddcrp_contribution(state.c, log_DDCRP)
 end
 
-# ============================================================================
-# Within-cluster Metropolis–Hastings updates (fixed partition)
-# ============================================================================
+# Within-cluster Metropolis-Hastings updates (random walk on the log scale)
 
-# Both parameters are positive, so both use a random walk on the log scale with
-# Jacobian log(θ') − log(θ).
 function _update_positive!(model, dict, table, state, data, priors, prop_sd)
     old = dict[table]
     log_old = log(old)
@@ -336,9 +245,7 @@ function update_params!(model::NegBinPopulationRates, state::NegBinPopulationRat
     end
 end
 
-# ============================================================================
 # Initialisation and sample extraction
-# ============================================================================
 
 function initialise_state(::NegBinPopulationRates, data, ddcrp_params::DDCRPParams,
         priors::NegBinPopulationRatesPriors)
@@ -354,7 +261,7 @@ function initialise_state(::NegBinPopulationRates, data, ddcrp_params::DDCRPPara
         key = sort(table)
         est = _fit_S(key, data, 3)
         if isnothing(est)
-            # No usable NB fit: match the mean exactly, start mildly overdispersed.
+            # No usable NB fit: match the mean, start mildly overdispersed.
             ΣE = sum(_exposure(data, i) for i in key)
             ρv = ΣE > 0 ? max(sum(y[i] for i in key) / ΣE, 1e-3) : ρ_prior_mean(priors)
             rv = r_prior_mean(priors)
@@ -390,16 +297,9 @@ function extract_samples!(::NegBinPopulationRates, state::NegBinPopulationRatesS
     end
 end
 
-# ============================================================================
-# Model comparison and posterior predictive (see `model_comparison.jl`)
-# ============================================================================
+# Model comparison and posterior predictive
 
-"""
-    loglik_matrix(::NegBinPopulationRates, samples, data) -> Matrix
-
-`(n_draws × n_obs)` matrix of `log p(y_i | ρ^(s)_i, r^(s)_i)`, the input WAIC,
-LPML and PSIS-LOO are computed from. Pass an already-thinned samples object.
-"""
+# (n_draws × n_obs) matrix of log p(y_i | ρ_i, r_i).
 function loglik_matrix(::NegBinPopulationRates,
         samples::NegBinPopulationRatesSamples, data)
     y = observations(data)
@@ -415,13 +315,7 @@ function loglik_matrix(::NegBinPopulationRates,
     return ll
 end
 
-"""
-    posterior_predictive(::NegBinPopulationRates, samples, data; n_rep=nothing)
-
-Draw one replicate dataset `y_rep` per retained posterior draw, using that
-draw's per-observation (ρ, r) and the observed exposures. Returns an
-`(n_draws × n_obs)` integer matrix.
-"""
+# One replicate dataset per retained posterior draw.
 function posterior_predictive(::NegBinPopulationRates,
         samples::NegBinPopulationRatesSamples, data; n_rep::Union{Nothing,Int} = nothing)
     S, n = size(samples.ρ)

@@ -1,13 +1,16 @@
+# Figures and ESS summary for the Old Faithful application. Run after run_old_faithful.jl.
+
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 ENV["GKSwstype"] = "nul"   # use GR's null backend; avoids Qt QPainterPath warnings
 using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase, JLD2, Printf, Distributions
+include(joinpath(@__DIR__, "dengue_common.jl"))   # dahl_point_estimate
 
 const OUTDIR = joinpath(@__DIR__, "..", "results", "old_faithful")
 const FIGDIR = joinpath(OUTDIR, "figures")
 mkpath(OUTDIR)
 mkpath(FIGDIR)
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# Load data
 
 println("Loading Old Faithful data...")
 faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "cleaned", "faithful.csv")))
@@ -16,7 +19,7 @@ w = Float64.(faithful.waiting)
 n = length(y)
 println("  n = $n observations")
 
-# ── Load MCMC samples ─────────────────────────────────────────────────────────
+# Load MCMC samples
 
 println("Loading MCMC samples...")
 chain_data = load(joinpath(OUTDIR, "mcmc_samples.jld2"))
@@ -24,7 +27,7 @@ samples = chain_data["samples"]
 n_samp = size(samples.c, 1)
 println("  $n_samp samples")
 
-# ── MCMC diagnostics ─────────────────────────────────────────────────────────
+# MCMC diagnostics
 
 if haskey(chain_data, "diagnostics")
     diag = chain_data["diagnostics"]
@@ -48,7 +51,7 @@ println("\nEffective Sample Size (post-thinning):")
 @printf("  K:             %.1f\n", ess_k)
 println()
 
-# ── ESS for shape parameters ──────────────────────────────────────────────────
+# ESS for shape parameters
 
 println("Computing per-observation α ESS...")
 ess_alpha_vec = [effective_sample_size(samples.α[:, i]) for i in 1:n]
@@ -65,7 +68,7 @@ ess_df = DataFrame(
 CSV.write(joinpath(OUTDIR, "ess_summary.csv"), ess_df)
 println("  Saved ess_summary.csv")
 
-# ── Figure 1: K posterior bar chart ──────────────────────────────────────────
+# Figure 1: posterior of K
 
 println("\nGenerating K posterior figure...")
 k_trace = calculate_n_clusters(samples.c)
@@ -89,7 +92,7 @@ fig1 = bar(k_vals, k_freq;
 savefig(fig1, joinpath(FIGDIR, "k_posterior.png"))
 println("  Saved k_posterior.png")
 
-# ── Figure 2: Trace plots (K + log-posterior, 1×2) ────────────────────────────
+# Figure 2: traces of K and the log posterior
 
 println("\nGenerating trace plots figure...")
 common_trace_kw = (
@@ -113,21 +116,23 @@ fig2 = plot(p_k_trace, p_lp_trace; layout=(1, 2), size=(900, 320))
 savefig(fig2, joinpath(FIGDIR, "traces.png"))
 println("  Saved traces.png")
 
-# ── Figure 3: MAP Clustering + Posterior Probability Arrows ──────────────────
+# Figure 3: Dahl point estimate with posterior link probabilities P(c_i = j | y)
 
-println("\nGenerating MAP clustering + arrows figure...")
+println("\nGenerating Dahl clustering + arrows figure...")
 
-k_mode = mode(k_trace)
-k3_idx = findall(k_trace .== k_mode)
-map_idx = k3_idx[argmax(samples.logpost[k3_idx])]
-c_map = samples.c[map_idx, :]
-z_map = compute_table_assignments(c_map)
-clusters = sort(unique(z_map))
+sim_mat = compute_similarity_matrix(samples.c)
+z_pt = dahl_point_estimate(samples.c, sim_mat)
+clusters = sort(unique(z_pt))
+for k in clusters
+    mask = z_pt .== k
+    @printf("  cluster %d: %d eruptions, mean duration %.2f min, waiting %d to %d min\n",
+            k, count(mask), mean(y[mask]), minimum(w[mask]), maximum(w[mask]))
+end
 
-p_map = plot(
+p_pt = plot(
     xlabel = "Waiting time (min)",
     ylabel = "Eruption duration (min)",
-    title = "MAP clustering with posterior link probabilities",
+    title = "Point estimate with posterior link probabilities",
     legend = :topleft,
     tickfontsize = 10,
     guidefontsize = 12,
@@ -137,15 +142,12 @@ p_map = plot(
     bottom_margin = 5Plots.mm,
 )
 
-println("  Computing link probabilities (K=$k_mode samples)...")
+println("  Computing link probabilities over all $n_samp samples...")
 link_prob = zeros(n, n)
-for iter in k3_idx
-    for i in 1:n
-        j = samples.c[iter, i]
-        link_prob[i, j] += 1
-    end
+for iter in 1:n_samp, i in 1:n
+    link_prob[i, samples.c[iter, i]] += 1
 end
-link_prob ./= length(k3_idx)
+link_prob ./= n_samp
 
 threshold = 0.02
 p_max = maximum(link_prob[i, j] for i in 1:n, j in 1:n if i != j)
@@ -158,7 +160,7 @@ for i in 1:n
         i == j && continue
         p = link_prob[i, j]
         p < threshold && j ∉ top_js && continue
-        quiver!(p_map, [w[i]], [y[i]];
+        quiver!(p_pt, [w[i]], [y[i]];
                 quiver = ([w[j] - w[i]], [y[j] - y[i]]),
                 color = get(arrow_cmap, 0.3 + 0.7 * p / p_max),
                 linewidth = clamp(p / p_max * 2.5, 0.6, 2.5),
@@ -166,23 +168,23 @@ for i in 1:n
     end
 end
 
-scatter!(p_map, Float64[], Float64[];
+scatter!(p_pt, Float64[], Float64[];
          zcolor=Float64[], color=arrow_cmap, colorbar=true,
          colorbar_title="\nPosterior link prob.", clims=(0.0, p_max),
          label=false)
 
 for (ci, k) in enumerate(clusters)
-    mask = z_map .== k
-    scatter!(p_map, w[mask], y[mask];
+    mask = z_pt .== k
+    scatter!(p_pt, w[mask], y[mask];
              label="Cluster $ci", color=palette(:tab10)[ci],
              markersize=4, alpha=0.85, markerstrokewidth=0.3)
 end
 
-fig3 = plot(p_map; size=(800, 560))
-savefig(fig3, joinpath(FIGDIR, "map_clustering_arrows.png"))
-println("  Saved map_clustering_arrows.png")
+fig3 = plot(p_pt; size=(800, 560))
+savefig(fig3, joinpath(FIGDIR, "point_clustering_arrows.png"))
+println("  Saved point_clustering_arrows.png")
 
-# ── Figure 4: Posterior Predictive Check ─────────────────────────────────────
+# Figure 4: posterior predictive check
 
 println("\nComputing posterior predictive check...")
 
@@ -241,3 +243,15 @@ savefig(fig4, joinpath(FIGDIR, "ppc.png"))
 println("  Saved ppc.png")
 
 println("\nAnalysis complete. Figures in: $FIGDIR")
+
+# Copy the paper's Old Faithful figures
+let paper = joinpath(@__DIR__, "..", "docs", "ddcrp-paper", "figures")
+    if !isdir(paper)
+        println("No paper directory at $paper (docs/ is git-ignored): figures left in $FIGDIR.")
+    else
+        for f in ("k_posterior.png", "traces.png", "point_clustering_arrows.png", "ppc.png")
+            cp(joinpath(FIGDIR, f), joinpath(paper, f); force = true)
+        end
+        println("Paper figures copied to $paper")
+    end
+end

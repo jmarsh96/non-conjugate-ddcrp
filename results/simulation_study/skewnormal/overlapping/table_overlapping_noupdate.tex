@@ -1,0 +1,21 @@
+% Required packages: booktabs
+% Generated automatically; re-run analyse_skewnormal.jl to update
+% Pooled over seeds: P(K=K*) with its Monte Carlo SE (spread of the per-seed
+% estimates), split-R-hat of K across seeds, and ESS columns as means per chain
+% (parameter ESS: median over observations), all from the thinned chain.
+% ESS(K)/s and Time use the mean wall-clock time per chain, burn-in included.
+
+\begin{tabular}{l l l r r r r r r r r r r r}
+  \toprule
+  $\xi$ & $\omega$ & $\kappa$ & $P(K{=}K^*)$ & $\hat{R}(K)$ & ESJD$(K)$ & ESS$(K)$ & ESS$(K)$/s & ESS$_\xi$ & ESS$_\omega$ & ESS$_\kappa$ & Birth (\%) & Fixed (\%) & Time (s) \\
+  \midrule
+  Normal & InvGamma & Normal & 0.57 (0.01) & 1.01 & 0.188 & 88 & 0.27 & 395 & 131 & 322 & 0.91 & 30.8 & 324 \\
+  Normal & LogNormal & Normal & 0.58 (0.02) & 1.01 & 0.190 & 99 & 0.30 & 367 & 125 & 304 & 0.92 & 30.6 & 327 \\
+  Normal & LogNormal & Prior & 0.61 (0.02) & 1.01 & 0.191 & 107 & 0.32 & 396 & 144 & 315 & 0.97 & 30.4 & 336 \\
+  Normal & Normal & Normal & 0.60 (0.02) & 1.01 & 0.192 & 97 & 0.29 & 429 & 130 & 313 & 0.95 & 30.5 & 340 \\
+  Normal & Prior & Normal & 0.58 (0.01) & 1.00 & 0.191 & 120 & 0.35 & 463 & 162 & 341 & 0.92 & 30.7 & 339 \\
+  Normal & Prior & Prior & 0.60 (0.01) & 1.00 & 0.195 & 134 & 0.41 & 373 & 151 & 297 & 0.98 & 30.7 & 326 \\
+  Prior & LogNormal & Normal & 0.58 (0.02) & 1.01 & 0.090 & 104 & 0.31 & 374 & 145 & 297 & 0.30 & 30.7 & 338 \\
+  Prior & Prior & Prior & 0.57 (0.03) & 1.03 & 0.094 & 67 & 0.20 & 289 & 105 & 224 & 0.32 & 30.7 & 337 \\
+  \bottomrule
+\end{tabular}

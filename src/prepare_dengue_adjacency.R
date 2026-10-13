@@ -1,27 +1,8 @@
-# ============================================================================
-# prepare_dengue_adjacency.R
+# Builds the queen contiguity graph (sf::st_touches) of one Brazilian state's municipalities
+# and writes it as an edge list to data/cleaned/dengue_uf<UF>_adjacency.csv. Disconnected
+# components are bridged to their nearest neighbour so hop distance is finite everywhere.
 #
-# Build the municipal contiguity graph for one Brazilian state, as an edge list
-# that `src/dengue_sensitivity.jl` reads. Julia cannot open the IBGE polygon
-# mesh, and spatial work in this project uses R + sf, so the graph is built
-# here and cached alongside the other derived datasets in `data/cleaned/`.
-#
-# Queen contiguity: two municipalities are adjacent if their boundaries touch
-# at all, corner contacts included (`sf::st_touches`). Rook contiguity would
-# drop the corner contacts, which for IBGE geometry are usually digitisation
-# artefacts of a genuinely shared edge rather than real point contacts.
-#
-# The graph must be CONNECTED for hop distance to be finite everywhere, so any
-# component left isolated by island or sliver geometry is joined to its nearest
-# neighbouring component by centroid distance, and the added edges are reported.
-#
-# Writes data/cleaned/dengue_uf<UF>_adjacency.csv (geocode_i, geocode_j; each undirected
-# edge once, i < j). Skips work if that file exists; pass --force to rebuild.
-#
-# Usage:
-#   Rscript src/prepare_dengue_adjacency.R
-#   Rscript src/prepare_dengue_adjacency.R --uf 41 --force
-# ============================================================================
+#   Rscript src/prepare_dengue_adjacency.R [--uf 41] [--force]
 
 for (p in c("sf", "dplyr")) {
   if (!requireNamespace(p, quietly = TRUE)) {
@@ -42,8 +23,7 @@ arg_value <- function(flag, default) {
 }
 uf <- as.integer(arg_value("--uf", "41"))
 
-# Locate the repo root from the --file= path Rscript passes, falling back to the
-# working directory, so the script runs from either the repo root or src/.
+# Locate the repo root from the --file= path Rscript passes.
 script_path <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
 repo <- if (length(script_path) == 1) {
   normalizePath(file.path(dirname(script_path), ".."), mustWork = FALSE)
@@ -59,9 +39,7 @@ if (file.exists(out_file) && !force) {
   quit(status = 0)
 }
 
-# ---------------------------------------------------------------------------
-# Geometry, restricted to the municipalities the dengue dataset actually uses
-# ---------------------------------------------------------------------------
+# Geometry, restricted to the municipalities in the dengue dataset
 
 mesh_file <- file.path(repo, "data", "cleaned", sprintf("malha_uf%d.geojson", uf))
 if (!file.exists(mesh_file)) {
@@ -81,14 +59,11 @@ cat(sprintf("Municipality set from %s: %d rows\n",
             basename(data_files[1]), nrow(obs)))
 
 g <- st_read(mesh_file, quiet = TRUE)
-# The IBGE mesh keys municipalities by the 7-digit geocode, exposed as
-# `codarea` in the v3 API response.
 key <- intersect(c("codarea", "CD_MUN", "code_muni"), names(g))[1]
 if (is.na(key)) stop("No geocode column in ", mesh_file)
 g$geocode <- as.numeric(as.character(g[[key]]))
 
-# Match, and order, to the dengue CSV: the Julia side indexes 1..n in that
-# order, so row i of the edge list must mean the same municipality there.
+# Order as in the dengue CSV, which the Julia side indexes 1..n.
 g <- g[match(obs$geocode, g$geocode), ]
 missing_geom <- sum(is.na(st_dimension(g)))
 if (any(is.na(g$geocode)) || missing_geom > 0) {
@@ -98,9 +73,7 @@ if (any(is.na(g$geocode)) || missing_geom > 0) {
 g <- st_make_valid(g)
 n <- nrow(g)
 
-# ---------------------------------------------------------------------------
 # Queen contiguity
-# ---------------------------------------------------------------------------
 
 cat("Computing queen contiguity...\n")
 suppressMessages(nb <- st_touches(g, sparse = TRUE))
@@ -112,12 +85,9 @@ edges <- do.call(rbind, lapply(seq_len(n), function(i) {
 }))
 if (is.null(edges)) edges <- data.frame(i = integer(0), j = integer(0))
 
-# ---------------------------------------------------------------------------
-# Connectivity: hop distance must be finite between every pair
-# ---------------------------------------------------------------------------
+# Connectivity
 
-# Connected components by iterative label propagation over the edge list. Kept
-# in base R rather than adding an igraph dependency for a dozen lines.
+# Connected components by label propagation over the edge list.
 components <- function(n, edges) {
   lab <- seq_len(n)
   repeat {
@@ -141,8 +111,7 @@ n_comp0 <- max(comp)
 n_added <- 0L
 
 while (max(comp) > 1) {
-  # Join the smallest component to whichever other component holds its nearest
-  # municipality by centroid great-circle distance.
+  # Join the smallest component to the component holding its nearest municipality.
   sizes <- tabulate(comp)
   target <- which.min(sizes)
   inside  <- which(comp == target)
@@ -170,9 +139,7 @@ cat(sprintf("Graph: %d nodes, %d edges, mean degree %.2f (min %d, max %d), %d co
             if (n_added > 0) sprintf(", %d bridging edge%s added",
                                      n_added, if (n_added == 1) "" else "s") else ""))
 
-# ---------------------------------------------------------------------------
 # Write
-# ---------------------------------------------------------------------------
 
 out <- data.frame(geocode_i = obs$geocode[edges$i],
                   geocode_j = obs$geocode[edges$j])

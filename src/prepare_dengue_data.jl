@@ -1,36 +1,13 @@
-# ============================================================================
-# prepare_dengue_data.jl
+# Builds the municipality-level dengue dataset for one Brazilian state and year:
+# cases y (InfoDengue alertcity API, weeks 1-52), population, and centroid lat/lon.
+# Cached in data/cleaned/; pass --force to refetch.
 #
-# Builds the municipality-level dengue dataset used by `run_dengue.jl`.
-#
-# For one Brazilian state (UF) and one calendar year it assembles, per
-# municipality:
-#
-#   y    total notified dengue cases over epidemiological weeks 1-52
-#   pop  population (the offset; used as E = pop / 1e5, so cluster rates ρ are
-#        cases per 100k inhabitants)
-#   lat, lon   centroid coordinates, used to build the great-circle distance
-#              matrix D that drives the ddCRP
-#
-# Sources (both open, no API key):
-#   - InfoDengue `alertcity` API, one request per municipality
-#     https://info.dengue.mat.br/api/alertcity
-#   - municipality centroids from the `municipios-brasileiros` dataset
-#
-# The InfoDengue step is a few hundred sequential HTTP requests, so the result
-# is cached in `data/cleaned/` and the download is skipped when the file already
-# exists. Pass `--force` to refetch.
-#
-# Usage:
-#   julia --project=. src/prepare_dengue_data.jl --uf 41 --year 2024
-#   julia --project=. src/prepare_dengue_data.jl --uf 41 --year 2024 --force
-# ============================================================================
+#   julia --project=. src/prepare_dengue_data.jl --uf 41 --year 2024 [--force]
 
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using CSV, DataFrames, Downloads, Printf, Statistics
 
-# The national municipality lookup is a download cache, kept in data/raw/ (not
-# committed); the state dataset and polygon mesh go to data/cleaned/.
+# Download cache in data/raw/; outputs in data/cleaned/.
 const RAW_DIR  = joinpath(@__DIR__, "..", "data", "raw")
 const DATA_DIR = joinpath(@__DIR__, "..", "data", "cleaned")
 
@@ -49,9 +26,7 @@ const UF_NAMES = Dict(
     51 => "Mato Grosso", 52 => "Goiás",     53 => "Distrito Federal",
 )
 
-# ============================================================================
 # Argument parsing
-# ============================================================================
 
 function parse_args(args)
     uf, year, force = 41, 2024, false
@@ -71,17 +46,9 @@ function parse_args(args)
     return (uf = uf, year = year, force = force)
 end
 
-# ============================================================================
 # Download helpers
-# ============================================================================
 
-"""
-    fetch_csv(url; retries=3) -> DataFrame
-
-GET `url` into memory and parse it as CSV. Retries with linear backoff, since
-the InfoDengue API occasionally drops a connection over a long batch of
-requests. Returns an empty DataFrame if every attempt fails.
-"""
+# GET `url` and parse it as CSV, with retries; an empty DataFrame if every attempt fails.
 function fetch_csv(url::AbstractString; retries::Int = 3)
     for attempt in 1:retries
         try
@@ -96,12 +63,7 @@ function fetch_csv(url::AbstractString; retries::Int = 3)
     return DataFrame()
 end
 
-"""
-    municipality_table(uf; force=false) -> DataFrame
-
-Centroids and names for every municipality in state `uf`, columns
-`geocode, name, lat, lon`. The national CSV is cached in `data/raw/`.
-"""
+# Centroids and names (`geocode, name, lat, lon`) for every municipality in state `uf`.
 function municipality_table(uf::Int; force::Bool = false)
     path = joinpath(RAW_DIR, "municipios_brasileiros.csv")
     if force || !isfile(path)
@@ -119,16 +81,7 @@ function municipality_table(uf::Int; force::Bool = false)
     )
 end
 
-"""
-    fetch_dengue(geocode, year) -> (cases, population) or nothing
-
-Total notified cases over epidemiological weeks 1-52 of `year`, plus the
-municipality population. `nothing` when the API returns no usable rows.
-
-InfoDengue reports one row per epidemiological week; `casos` is the notified
-count and `pop` is repeated on every row, so the population is taken as the
-maximum over weeks (it is constant within a year in practice).
-"""
+# Total notified cases over weeks 1-52 of `year` and the municipality population, or `nothing`.
 function fetch_dengue(geocode::Integer, year::Int)
     url = "https://info.dengue.mat.br/api/alertcity?" *
           "geocode=$(geocode)&disease=dengue&format=csv" *
@@ -142,16 +95,9 @@ function fetch_dengue(geocode::Integer, year::Int)
     return (cases = Int(round(cases)), population = Float64(maximum(pops)))
 end
 
-# ============================================================================
 # Boundary geometry (for the R/sf maps)
-# ============================================================================
 
-"""
-    fetch_boundaries(uf; force=false)
-
-Cache the IBGE municipal boundary mesh for state `uf` as GeoJSON. Used only by
-`src/map_dengue.R`; failure here is non-fatal for the MCMC pipeline.
-"""
+# Cache the IBGE municipal boundary mesh for state `uf` as GeoJSON.
 function fetch_boundaries(uf::Int; force::Bool = false)
     path = joinpath(DATA_DIR, "malha_uf$(uf).geojson")
     if !force && isfile(path)
@@ -170,9 +116,7 @@ function fetch_boundaries(uf::Int; force::Bool = false)
     return path
 end
 
-# ============================================================================
 # Main
-# ============================================================================
 
 function main(args)
     opts = parse_args(args)
@@ -240,8 +184,6 @@ function summarise(df::DataFrame, uf::Int, year::Int)
     @printf("  incidence/100k : min %.1f, median %.1f, max %.1f\n",
             minimum(inc), median(inc), maximum(inc))
     @printf("  zero-case municipalities : %d\n", count(==(0), df.y))
-    # Overdispersion relative to Poisson is what the NB dispersion parameter is
-    # there to absorb — if this is ~1 the model is over-specified.
     μ = mean(df.y)
     @printf("  marginal Var/Mean of counts : %.1f  (Poisson ⇒ 1)\n", var(df.y) / μ)
 end

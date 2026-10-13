@@ -1,0 +1,3 @@
+reference_mean_K 6.0202
+n_ref 200000
+n_samples 100000

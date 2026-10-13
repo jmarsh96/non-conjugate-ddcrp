@@ -1,25 +1,9 @@
-# ============================================================================
-# map_dengue.R
+# Maps for the dengue application. Run after analyse_dengue.jl.
+# Writes dengue_maps.png (observed and posterior mean incidence on one scale, with the Dahl
+# partition as boundaries) and dengue_map_uncertainty.png to results/real_data/dengue/figures/,
+# and copies them to docs/ddcrp-paper/figures/ unless --test.
 #
-# Spatial maps for the Brazil dengue application, as reported in the paper.
-# Run AFTER src/analyse_dengue.jl, which writes `cluster_assignments.csv` (the
-# mode partition of the selected sampler).
-#
-# Spatial work in this project uses R + sf (not Julia, not geopandas), so the
-# maps live here rather than in the analyse script.
-#
-# Produces, in results/real_data/dengue/figures/ (dengue_test/ under
-# --test), and copies to docs/ddcrp-paper/figures/ unless --test:
-#   dengue_maps.png             observed incidence | posterior mean incidence,
-#                               on one shared colour scale, with the mode
-#                               partition drawn as cluster boundaries
-#   dengue_map_uncertainty.png  mean posterior co-clustering probability of
-#                               each municipality with its own cluster
-#
-# Usage:
-#   Rscript src/map_dengue.R
-#   Rscript src/map_dengue.R --test
-# ============================================================================
+#   Rscript src/map_dengue.R [--test]
 
 for (p in c("sf", "ggplot2", "dplyr")) {
   if (!requireNamespace(p, quietly = TRUE)) {
@@ -34,8 +18,7 @@ suppressPackageStartupMessages({
 args    <- commandArgs(trailingOnly = TRUE)
 is_test <- "--test" %in% args
 
-# Locate the repo root from the --file= path Rscript passes, falling back to the
-# working directory, so the script runs from either the repo root or src/.
+# Locate the repo root from the --file= path Rscript passes.
 script_path <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
 repo <- if (length(script_path) == 1) {
   normalizePath(file.path(dirname(script_path), ".."), mustWork = FALSE)
@@ -59,9 +42,7 @@ cl$log_incidence <- log10(pmax(cl$incidence, 1))
 cat(sprintf("Loaded %d municipalities in %d clusters.\n",
             nrow(cl), nlevels(cl$cluster)))
 
-# ---------------------------------------------------------------------------
 # Geometry: IBGE municipal boundaries when available, otherwise centroids only.
-# ---------------------------------------------------------------------------
 
 uf_files <- list.files(file.path(repo, "data", "cleaned"), pattern = "^malha_uf[0-9]+\\.geojson$",
                        full.names = TRUE)
@@ -69,8 +50,6 @@ polys <- NULL
 if (length(uf_files) > 0) {
   polys <- tryCatch({
     g <- st_read(uf_files[1], quiet = TRUE)
-    # The IBGE mesh keys municipalities by the 7-digit geocode, exposed as
-    # `codarea` in the v3 API response.
     key <- intersect(c("codarea", "CD_MUN", "code_muni"), names(g))[1]
     if (is.na(key)) NULL else { g$geocode <- as.numeric(as.character(g[[key]])); g }
   }, error = function(e) { message("Boundary read failed: ", conditionMessage(e)); NULL })
@@ -93,15 +72,7 @@ base_theme <- theme_minimal(base_size = 13) +
         legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.35, "cm"),
         plot.title = element_text(size = 13, hjust = 0.5))
 
-# ---------------------------------------------------------------------------
 # 1. Observed and posterior mean incidence, on one shared scale
-#
-# Each municipality is filled by its posterior mean incidence E[rho_{z_i} | y],
-# averaged over every draw of every chain, so the fitted map does not depend on
-# any single partition, whose co-clustering support is weak. The mode partition
-# is overlaid as white boundaries for reference. Both panels share one scale
-# and compare directly.
-# ---------------------------------------------------------------------------
 
 ord <- cl %>% group_by(cluster) %>%
   summarise(rho = median(rho_mean, na.rm = TRUE), n = n(), .groups = "drop") %>%
@@ -127,9 +98,7 @@ if (!is.null(polys)) {
 }
 p_fit <- p_fit + base_theme
 
-# Side by side without an extra layout package: draw both panels into one
-# device with grid viewports. A shared legend would need patchwork, which is
-# not assumed installed, so each panel keeps its own (identical) legend.
+# Both panels in one device with grid viewports.
 maps_file <- file.path(figdir, "dengue_maps.png")
 png(maps_file, width = 13, height = 6, units = "in", res = 200, bg = "white")
 grid::grid.newpage()
@@ -138,12 +107,9 @@ print(p_obs, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 1))
 print(p_fit, vp = grid::viewport(layout.pos.row = 1, layout.pos.col = 2))
 invisible(dev.off())
 
-# ---------------------------------------------------------------------------
 # 2. Clustering uncertainty
-# ---------------------------------------------------------------------------
 
-# Singletons have no other members, so the statistic is undefined for them;
-# they are drawn in grey rather than left to read as a low value.
+# Singletons have no other members and are drawn in grey.
 p_unc <- ggplot(map_df) + fill_layer("cocluster_confidence") +
   scale_fill_viridis_c(option = "magma", limits = c(0, 1), na.value = "grey70",
                        name = "co-clustering probability",
@@ -161,7 +127,6 @@ print(as.data.frame(ord %>% mutate(rho = round(rho, 1))))
 if (is_test) {
   cat("\n--test: maps left in ", figdir, " (docs/ddcrp-paper/ untouched)\n", sep = "")
 } else if (!dir.exists(file.path(repo, "docs", "ddcrp-paper", "figures"))) {
-  # docs/ is git-ignored, so a cluster checkout has no paper directory.
   cat("\nNo docs/ddcrp-paper/figures (docs/ is git-ignored): maps left in ", figdir, "\n", sep = "")
 } else {
   paper_figs <- file.path(repo, "docs", "ddcrp-paper", "figures")

@@ -1,51 +1,11 @@
-# ============================================================================
-# run_dengue.jl
+# Dengue incidence across the municipalities of one Brazilian state (default Paraná, 2024):
+#   y_i | ρ_k, r_k ~ NegativeBinomial(mean = E_i ρ_k, size = r_k),  E_i = pop_i / 1e5
+# under a hop-window ddCRP prior of radius HOP_RADIUS on the contiguity graph.
 #
-# Real-data application: spatial clustering of 2024 dengue incidence across the
-# municipalities of a Brazilian state, under a genuinely non-conjugate Negative
-# Binomial likelihood. This is the analysis reported in the paper.
+# Part 1 sweeps the proposal families, Part 2 tunes σ for the winner, Part 3 runs the final
+# chains and a Poisson comparator. Run prepare_dengue_data.jl and prepare_dengue_adjacency.R first.
 #
-#   y_i | ρ_k, r_k ~ NegativeBinomial(mean = E_i ρ_k, size = r_k)
-#     E_i = pop_i / 1e5      ⇒ ρ_k is the cluster incidence per 100k
-#     r_k                     the cluster overdispersion (r → ∞ ⇒ Poisson)
-#
-# BOTH cluster parameters are non-conjugate, so no collapsed sampler exists.
-#
-# THE ddCRP PRIOR is the hop window of radius HOP_RADIUS on the queen contiguity
-# graph: link weight is uniform over municipalities within HOP_RADIUS steps and
-# suppressed (by e^-30) beyond, encoded as a 0 / LOG_FLOOR distance matrix under
-# kernel rate 1 (see `hop_window_D` in dengue_common.jl). The radius is FIXED;
-# how much the clustering depends on it, and on the choice of metric, is the
-# subject of `src/dengue_sensitivity.jl`.
-#
-# LINKS ARE PROPOSED FROM THE PRIOR (`link_proposal = PriorLink()`), not
-# uniformly: under the window only ~19 of the 399 municipalities carry any
-# weight, so a uniform draw would waste ~95% of proposals, and a likelihood
-# evaluation each, on links the prior all but forbids. With the prior proposal
-# the proposal ratio cancels the prior ratio, so acceptance depends only on the
-# likelihood and the parameter proposal.
-#
-# Run `src/prepare_dengue_data.jl` and `src/prepare_dengue_adjacency.R` first.
-#
-# Parts, all via `pmap` over worker processes:
-#   0. --pilot  : short chains at several subsample sizes, to measure cost.
-#   1. Proposal-family sweep — coordinate design over the birth family for each
-#      parameter, crossed with fixed-dim ∈ {NoUpdate, Resample}. The winner is
-#      the configuration with the largest ESJD(K).
-#   2. σ tuning — a grid over the winner's tunable proposal scales, again by
-#      ESJD(K). Skipped when nothing in the winner is tunable.
-#   3. Final — one chain per seed in FINAL_SEEDS for the selected sampler (their
-#      agreement replaces the Gibbs baseline this model does not have), and a
-#      non-marginalised Poisson comparator that exists only to be scored against
-#      the NB by WAIC / LOO.
-#
-# Usage:
-#   julia --project=. src/run_dengue.jl --pilot
-#   julia --project=. src/run_dengue.jl --test
-#   julia --project=. src/run_dengue.jl
-#   julia --project=. src/run_dengue.jl --slurm
-#   --workers N sets the local worker count (default 8).
-# ============================================================================
+#   julia --project=. src/run_dengue.jl [--pilot] [--test] [--slurm] [--workers N]
 
 using DistanceDependentCRP, CSV, DataFrames, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -63,9 +23,7 @@ const YEAR = arg_value("--year", 2024)
 
 if USE_SLURM
     using SlurmClusterManager
-    # launch_timeout defaults to 60s, which is not enough for a wide allocation
-    # loading packages off /rds; the workers then die with "launch_timeout
-    # exceeded" before they can call home.
+    # The 60s default is too short for a wide allocation.
     addprocs(SlurmManager(launch_timeout = 300.0))
 else
     addprocs(arg_value("--workers", 8))
@@ -78,21 +36,13 @@ end
     include(joinpath(@__DIR__, "dengue_common.jl"))
 end
 
-# ============================================================================
-# Proposal settings
-#
-# Within-cluster MH scales are fixed from short pilot runs. The birth and
-# resample σ below are only the Part 1 defaults; Part 2 selects the values used
-# in the final chains.
-# ============================================================================
+# Proposal settings (σ below are the Part 1 defaults; Part 2 tunes them)
 
 @everywhere const PROP_SDS = (ρ = 0.15, r = 0.30)   # within-cluster MH, log scale
 const SIGMA_BIRTH = 0.50                            # NMM / LNMM birth σ
 const SIGMA_RESAMPLE = 0.10                         # NMM / LNMM resample σ
 
-# ============================================================================
 # Per-parameter proposal-family builders
-# ============================================================================
 
 @everywhere function _birth_family(fam::Symbol, σ)
     fam === :prior && return PriorProposal()
@@ -109,15 +59,9 @@ end
     resample ? MixedFixedDim((ρ = Resample(_birth_family(fρ, σr)),
                               r = Resample(_birth_family(fr, σr)))) : NoUpdate()
 
-# Whether a family's proposal has a σ to tune.
 has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
 
-# ============================================================================
-# Chain thinning for storage
-#
-# Only the post-burn-in, thinned draws are written to disk: a full-length raw
-# chain is 250k × n per parameter matrix, several GB at n = 399.
-# ============================================================================
+# Only post-burn-in, thinned draws are written to disk
 
 @everywhere thin_chain(s::NegBinPopulationRatesSamples, keep) =
     NegBinPopulationRatesSamples(s.c[keep, :], s.ρ[keep, :], s.r[keep, :],
@@ -126,9 +70,7 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
     PoissonPopulationRatesSamples(s.c[keep, :], s.ρ[keep, :], s.logpost[keep],
                                   s.α_ddcrp[keep], s.s_ddcrp[keep])
 
-# ============================================================================
 # Unit of work
-# ============================================================================
 
 @everywhere function run_and_save(cfg)
     Random.seed!(cfg.seed)
@@ -141,15 +83,10 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
         track_diagnostics = true,
         infer_params = Dict{Symbol,Bool}(:α_ddcrp => true, :s_ddcrp => false),
         prop_sds = Dict{Symbol,Float64}(:ρ => PROP_SDS.ρ, :r => PROP_SDS.r),
-        # Links are proposed from the ddCRP prior, not uniformly. Under the hop
-        # window only about 19 of the 399 municipalities carry any weight, so a
-        # uniform draw would spend 95% of proposals on links the prior all but
-        # forbids, each costing a likelihood evaluation before being rejected.
+        # Propose links from the prior: a uniform draw mostly lands outside the hop window.
         link_proposal = PriorLink(),
     )
 
-    # α_ddcrp ~ Gamma(1, rate 0.01), inferred; the kernel rate is fixed at 1
-    # because the hop window encodes the prior entirely in D.
     ddcrp = DDCRPParams(1.0, cfg.kernel_rate, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
 
     if cfg.family === :negbin
@@ -157,7 +94,7 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
         priors = cfg.priors
         birth  = make_birth(cfg.fam_ρ, cfg.fam_r, cfg.σ_birth)
         fdim   = make_fdim(cfg.fam_ρ, cfg.fam_r, cfg.σ_resample; resample = cfg.resample)
-    else # :poisson — the likelihood comparator
+    else # :poisson, the likelihood comparator
         model  = PoissonPopulationRates()
         priors = cfg.priors_pois
         birth  = PriorProposal()
@@ -177,13 +114,11 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
     ess_K   = effective_sample_size(Float64.(k_trace))
     esjd_K  = mean(diff(Float64.(k_trace)).^2)
 
-    # Per-parameter mixing: median ESS across observations.
     med_ess(M) = median([effective_sample_size(M[:, i]) for i in axes(M, 2)])
     ess_ρ = med_ess(post.ρ)
     ess_r = cfg.family === :negbin ? med_ess(post.r) : NaN
 
-    # Saved already burnt-in and thinned, so the analyse script's burn/thin are
-    # no-ops on the stored object.
+    # Saved already burnt-in and thinned.
     chain_dir = joinpath(cfg.outdir, "chains"); mkpath(chain_dir)
     jldsave(joinpath(chain_dir, cfg.chain_filename);
             samples = post, burn = 0, thin = 1,
@@ -228,27 +163,17 @@ has_sigma(fam::Symbol) = fam in (:nmm, :lnmm)
     )
 end
 
-# ============================================================================
 # Constants
-# ============================================================================
 
 const N_SAMPLES_SWEEP = IS_TEST ? 1_000 :  60_000
 const BURN_SWEEP      = IS_TEST ?   200 :  10_000
 const THIN_SWEEP      = 5
-# Final chains: N_POST_FINAL draws AFTER burn-in, so the chain length is the
-# sum of the two. 250k is sized from the prior link proposal: a 20k-iteration
-# run of the selected sampler gave ESS(K) ≈ 200, about fifteen times the
-# per-second yield of the uniform proposal, so 250k should give ESS(K) in the
-# low thousands per chain. Thinning by 10 keeps 25k draws per chain, about
-# 240 MB saved and ~2.9 GB raw per worker.
+# Final chains: N_POST_FINAL draws after burn-in.
 const N_POST_FINAL    = IS_TEST ? 1_200 : 250_000
 const BURN_FINAL      = IS_TEST ?   300 :  50_000
 const N_SAMPLES_FINAL = N_POST_FINAL + BURN_FINAL
 const THIN_FINAL      = IS_TEST ?     5 :      10
 
-# Independent chains of the selected sampler. There is no collapsed sampler to
-# compare against, so between-chain agreement is the convergence check, and R̂
-# needs more than two chains to be informative.
 const FINAL_SEEDS = IS_TEST ? [42, 202] : [42, 202, 7, 13]
 
 const OUTDIR = IS_TEST ?
@@ -256,9 +181,7 @@ const OUTDIR = IS_TEST ?
     joinpath(@__DIR__, "..", "results", "real_data", "dengue")
 mkpath(OUTDIR)
 
-# ============================================================================
-# Load data and the contiguity graph
-# ============================================================================
+# Data and the contiguity graph
 
 const DATA_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(UF)_$(YEAR).csv")
 isfile(DATA_FILE) || error("""
@@ -280,7 +203,6 @@ const NBRS  = neighbour_lists(A_ADJ)
 const H_HOP = hop_distances(NBRS)
 any(isinf, H_HOP) && error("contiguity graph is disconnected; rebuild the edge list")
 
-# The ddCRP prior: a uniform hop window of radius HOP_RADIUS, under kernel rate 1.
 const HOP_RADIUS  = 2
 const KERNEL_RATE = 1.0
 const D_ALL = hop_window_D(H_HOP, HOP_RADIUS)
@@ -294,13 +216,8 @@ const D_ALL = hop_window_D(H_HOP, HOP_RADIUS)
 @printf("  hop window radius %d: mean %.1f municipalities in each window\n",
         HOP_RADIUS, mean(count(<=(HOP_RADIUS), view(H_HOP, i, :)) - 1 for i in 1:N))
 
-# ============================================================================
 # Shared model settings
-# ============================================================================
 
-# ρ prior centred on the state-wide incidence, deliberately diffuse (shape 1.5
-# ⇒ sd > mean) so it does not pin the cluster rates; r prior weakly informative
-# over the overdispersion range typical of areal count data.
 const ρ_BAR = sum(Y_ALL) / sum(E_ALL)
 const ρ_A = 1.5
 const PRIORS = NegBinPopulationRatesPriors(ρ_a = ρ_A, ρ_b = ρ_A / ρ_BAR, r_a = 2.0, r_b = 0.5)
@@ -308,9 +225,7 @@ const PRIORS_POIS = PoissonPopulationRatesPriors(ρ_A, ρ_A / ρ_BAR)
 
 @printf("  ρ prior: Gamma(%.1f, rate %.2e) ⇒ mean %.0f per 100k\n", ρ_A, ρ_A / ρ_BAR, ρ_BAR)
 
-# ============================================================================
 # Config builder
-# ============================================================================
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 fmtσ(x) = replace(@sprintf("%g", x), "." => "p")
@@ -339,9 +254,7 @@ function make_cfg(; family = :negbin, fam_ρ = :lnmm, fam_r = :lnmm, resample = 
     )
 end
 
-# ============================================================================
 # Summary printer and selection rule
-# ============================================================================
 
 function print_summary_table(df, title)
     W = 150
@@ -360,14 +273,10 @@ function print_summary_table(df, title)
     println("=" ^ W)
 end
 
-# The selection rule used throughout: largest ESJD(K), ties broken by ESS(K).
-# ESJD(K) rewards chains that move between partitions with different numbers of
-# clusters, which is exactly what the trans-dimensional proposals are for.
+# Selection: largest ESJD(K), ties broken by ESS(K).
 best_row(df) = df[sortperm(collect(zip(df.esjd_K, df.ess_K)); rev = true)[1], :]
 
-# ============================================================================
-# Part 0 — pilot: how does cost scale with n, and is the sampler moving?
-# ============================================================================
+# Part 0: pilot (cost scaling with n)
 
 if IS_PILOT
     sizes = filter(m -> m <= N, [100, 200, 300, N])
@@ -377,9 +286,7 @@ if IS_PILOT
     println("PILOT — $(length(sizes)) subsample sizes × $n_iter iterations")
     println("$(repeat('=', 80))")
 
-    # Spatially-representative subsamples: sort by longitude and take an even
-    # stride, so a subsample still spans the state. The hop window is kept from
-    # the full graph, so each subsample sees the same prior restricted to it.
+    # Subsample evenly along longitude so each subsample still spans the state.
     order = sortperm(DF.lon)
     pilot_cfgs = [
         begin
@@ -411,12 +318,7 @@ if IS_PILOT
     exit(0)
 end
 
-# ============================================================================
-# Part 1 — proposal-family sweep (coordinate design)
-#
-# Baseline (ρ:lnmm, r:lnmm); swap one parameter's family at a time; plus an
-# all-prior reference. Each crossed with {NoUpdate, Resample}.
-# ============================================================================
+# Part 1: proposal-family sweep (coordinate design around ρ:lnmm, r:lnmm)
 
 const BIRTH_SPECS = Tuple{Symbol,Symbol,String}[
     (:lnmm,  :lnmm,   "baseline"),
@@ -449,9 +351,7 @@ const BEST_RESAMPLE = best_sweep.fdim == "resample"
 @printf("\nSelected by ESJD(K): %s  (ESJD %.4f, ESS(K) %.0f)\n",
         best_sweep.label, best_sweep.esjd_K, best_sweep.ess_K)
 
-# ============================================================================
-# Part 2 — σ tuning for the selected family / fixed-dim pair
-# ============================================================================
+# Part 2: σ tuning for the selected family / fixed-dim pair
 
 const SIGMA_GRID    = IS_TEST ? [0.25, 0.5] : [0.1, 0.25, 0.5, 1.0, 2.0]
 const RESAMPLE_GRID = IS_TEST ? [0.1]       : [0.05, 0.1, 0.25]
@@ -464,7 +364,7 @@ sr_grid = TUNE_RESAMPLE ? RESAMPLE_GRID : [SIGMA_RESAMPLE]
 
 sel_σ_birth, sel_σ_resample = SIGMA_BIRTH, SIGMA_RESAMPLE
 if TUNE_BIRTH || TUNE_RESAMPLE
-    # Part 1 already ran the default (σ_birth, σ_resample) point; do not rerun it.
+    # Part 1 already ran the default σ point.
     tune_cfgs = [make_cfg(; fam_ρ = BEST_FAM_ρ, fam_r = BEST_FAM_r, resample = BEST_RESAMPLE,
                             varied = "tune", σ_birth = σb, σ_resample = σr,
                             suffix = "_tune_b$(fmtσ(σb))" * (BEST_RESAMPLE ? "_r$(fmtσ(σr))" : ""))
@@ -476,7 +376,6 @@ if TUNE_BIRTH || TUNE_RESAMPLE
     println("$(repeat('=', 80))")
 
     tune_df = DataFrame(collect(pmap(run_and_save, tune_cfgs)))
-    # The Part 1 winner is the default-σ grid point, so it competes too.
     tune_all = vcat(DataFrame(best_sweep), tune_df; cols = :union)
     CSV.write(joinpath(OUTDIR, "summary_tune.csv"), tune_all)
     print_summary_table(sort(tune_all, :esjd_K, rev = true), "PART 2 — σ tuning (sorted by ESJD(K))")
@@ -494,9 +393,7 @@ else
     println("\nPART 2 skipped: $(best_sweep.label) has no tunable proposal scale.")
 end
 
-# ============================================================================
-# Part 3 — final chains at full length
-# ============================================================================
+# Part 3: final chains
 
 best_cfg(; seed, label = nothing) =
     make_cfg(; fam_ρ = BEST_FAM_ρ, fam_r = BEST_FAM_r, resample = BEST_RESAMPLE,
@@ -507,8 +404,7 @@ best_cfg(; seed, label = nothing) =
 
 const BEST_LABEL = best_cfg(; seed = first(FINAL_SEEDS)).label
 
-# One chain per seed, labelled "(chain k)" after the first so the analyse script
-# can tell them apart, plus the Poisson comparator.
+# One chain per seed, labelled "(chain k)" after the first, plus the Poisson comparator.
 final_cfgs = Any[
     best_cfg(; seed = s, label = k == 1 ? BEST_LABEL : BEST_LABEL * " (chain $k)")
     for (k, s) in enumerate(FINAL_SEEDS)
@@ -529,7 +425,7 @@ final_df = DataFrame(collect(pmap(run_and_save, final_cfgs)))
 CSV.write(joinpath(OUTDIR, "summary_final.csv"), final_df)
 print_summary_table(final_df, "PART 3 — dengue final chains")
 
-# Metadata the analyse script needs to rebuild the dataset and find the chains.
+# Metadata the analyse script needs.
 jldsave(joinpath(OUTDIR, "run_metadata.jld2");
         uf = UF, year = YEAR, y = Y_ALL, E = E_ALL, D = D_ALL,
         adjacency = A_ADJ, hop = H_HOP,
