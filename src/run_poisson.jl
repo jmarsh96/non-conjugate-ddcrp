@@ -1,26 +1,8 @@
-# ============================================================================
-# run_poisson.jl
+# Poisson simulation study: n = 150, K = 3, rates (1, 4, 7).
+# Part 1 sweeps the proposals (Gibbs baseline plus birth × fixed-dim variants), Part 2 tunes
+# σ by ESJD(K), Part 3 runs full-length chains for the best-tuned variants.
 #
-# Simulation study for Poisson clustering (no population offset).
-#
-# Scenario: overlapping — cluster rates (1, 4, 7); harder separation
-#
-# Part 1 — Proposal-type sweep (parallel): 7 configs × 110,000 iterations
-#   Compares:
-#     - PoissonClusterRatesMarg  – Gibbs (λ_k marginalised)
-#     - PoissonClusterRates      × birth ∈ {Prior, NMM σ=0.5, LNMM σ=0.5}
-#                                × fixed-dim ∈ {NoUpdate, Resample}
-#
-# Part 2 — Tuning-parameter sweep (parallel): shorter runs to select σ
-#   NMM and LNMM:
-#     NoUpdate configs : 1D sweep over σ_birth
-#     Resample configs : 2D grid σ_birth × σ_resample
-#   Selects best σ per (proposal, fixed-dim) group by ESJD(K).
-#
-# Part 3 — Final comparison (parallel): full-length chains for 4 best-tuned
-#   RJMCMC variants alongside Gibbs and Prior baselines from Part 1.
-#
-# ============================================================================
+#   julia --project=. src/run_poisson.jl [--test] [--slurm] [--infer_s]
 
 using DistanceDependentCRP, CSV, DataFrames, Distances, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -31,7 +13,8 @@ const INFER_S = "--infer_s" in ARGS
 
 if USE_SLURM
     using SlurmClusterManager
-    addprocs(SlurmManager())
+    # The 60s default is too short for a wide allocation.
+    addprocs(SlurmManager(launch_timeout = 300.0))
 else
     addprocs(8)
 end
@@ -107,9 +90,7 @@ end
     )
 end
 
-# ============================================================================
 # Constants
-# ============================================================================
 
 const N_SAMPLES_SWEEP = IS_TEST ? 1_000 : 110_000
 const BURN_SWEEP = IS_TEST ? 200 : 10_000
@@ -124,9 +105,7 @@ const POISSON_DIR = IS_TEST ? joinpath(@__DIR__, "..", "results", "simulation_st
     joinpath(@__DIR__, "..", "results", "simulation_study", "poisson")
 mkpath(POISSON_DIR)
 
-# ============================================================================
 # Simulate data
-# ============================================================================
 
 function make_cluster_x(n::Int, centers::Vector{Float64}, σ::Float64; seed::Int=0)
     rng = MersenneTwister(seed)
@@ -140,10 +119,7 @@ Random.seed!(42)
 x_centers = [-3.0, 0.0, 3.0]
 x = make_cluster_x(N_OBS, x_centers, 1.5; seed=0)
 
-# Pointer representation: each obs points to the first member of its cluster.
-# Cluster 1: obs 1–50  → all point to 1
-# Cluster 2: obs 51–100 → all point to 51
-# Cluster 3: obs 101–150 → all point to 101
+# Pointer representation: each observation points to the first member of its cluster.
 const C_FIXED = vcat([fill(1 + (k - 1) * (N_OBS ÷ K_TRUE), N_OBS ÷ K_TRUE) for k in 1:K_TRUE]...)
 const D_SIM = pairwise(Euclidean(), reshape(x, 1, :))
 
@@ -166,9 +142,7 @@ println("Saved sim_data.jld2")
 
 const SCENARIOS = [("overlapping", SIM_OVERLAPPING)]
 
-# ============================================================================
 # Shared model settings
-# ============================================================================
 
 const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
 const PRIORS = PoissonClusterRatesPriors(1.0, 0.1)
@@ -177,9 +151,7 @@ const PRIORS_MARG = PoissonClusterRatesMargPriors(1.0, 0.1)
 const σ_NMM = 0.5
 const σ_LNMM = 0.5
 
-# ============================================================================
 # Config builder
-# ============================================================================
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 
@@ -213,9 +185,7 @@ function make_cfg(label, scenario_name, sim, model, priors, birth, fdim,
     )
 end
 
-# ============================================================================
 # Summary printer
-# ============================================================================
 
 function print_summary_table(df, title, thin_factor)
     W = 135
@@ -248,9 +218,7 @@ function print_summary_table(df, title, thin_factor)
     println("=" ^ W)
 end
 
-# ============================================================================
-# Part 1: Parallel proposal sweep
-# ============================================================================
+# Part 1: proposal sweep
 
 sweep_configs = Any[]
 for (sname, sim) in SCENARIOS
@@ -319,9 +287,7 @@ end
 CSV.write(joinpath(POISSON_DIR, "summary_sweep.csv"), sweep_df)
 println("Sweep summary → $(joinpath(POISSON_DIR, "summary_sweep.csv"))")
 
-# ============================================================================
-# Part 2: Tuning-parameter sweep for NMM and LNMM
-# ============================================================================
+# Part 2: σ tuning for NMM and LNMM
 
 const σ_BIRTH_SWEEP = IS_TEST ? [0.1, 0.5, 1.0] : [0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
 const σ_RESAMPLE_SWEEP = IS_TEST ? [0.05, 0.25, 1.0] : [0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
@@ -429,9 +395,7 @@ end
 CSV.write(joinpath(POISSON_DIR, "summary_tune.csv"), tune_df)
 println("\nTuning summary → $(joinpath(POISSON_DIR, "summary_tune.csv"))")
 
-# ============================================================================
-# Part 3: Full-length chains for best-tuned RJMCMC variants
-# ============================================================================
+# Part 3: full-length chains for the best-tuned variants
 
 final_rjmcmc_cfgs = Any[]
 for (sname, sim) in SCENARIOS

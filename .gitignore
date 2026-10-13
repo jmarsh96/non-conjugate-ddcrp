@@ -1,1 +1,30 @@
-results/
+logs/
+poster/
+talk/
+docs/
+data/raw/
+src/slurm/
+*.log
+Manifest.toml.bak
+
+# results: only the small outputs of the four paper studies are tracked
+results/**
+!results/**/
+!results/simulation_study/skewnormal/**/*.csv
+!results/simulation_study/skewnormal/**/*.tex
+!results/simulation_study/skewnormal/**/*.png
+!results/simulation_study/skewnormal/**/*.txt
+!results/simulation_study/poisson/**/*.csv
+!results/simulation_study/poisson/**/*.tex
+!results/simulation_study/poisson/**/*.png
+!results/real_data/dengue/**/*.csv
+!results/real_data/dengue/**/*.tex
+!results/real_data/dengue/**/*.png
+!results/old_faithful/**/*.csv
+!results/old_faithful/**/*.png
+
+# superseded outputs no script writes any more
+results/simulation_study/skewnormal/*/table_overlapping.tex
+results/simulation_study/skewnormal/*/table_separated.tex
+results/simulation_study/skewnormal/geweke/table_geweke.tex
+results/old_faithful/figures/map_clustering_arrows.png

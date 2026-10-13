@@ -1,3 +1,7 @@
+# Old Faithful eruption data under the marginalised Gamma model (GammaClusterShapeMarg).
+#
+#   julia --project=. src/run_old_faithful.jl [--test]
+
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using DistanceDependentCRP, DataFrames, CSV, Random, Distances, StatsPlots, JLD2
 
@@ -6,7 +10,7 @@ is_test = "--test" in ARGS
 const N_SAMPLES = is_test ? 2500 : 250_000
 const BURNIN = is_test ? 500 : 50_000
 const THIN_FACTOR = 20
-const OUTDIR = joinpath(@__DIR__, "..", "results", "old_faithful")
+const OUTDIR = joinpath(@__DIR__, "..", "results", is_test ? "old_faithful_test" : "old_faithful")
 mkpath(OUTDIR)
 
 const MODEL = GammaClusterShapeMarg()
@@ -41,7 +45,7 @@ const OPTS = MCMCOptions(
 
 # load and clean data
 println("Loading Old Faithful data...")
-faithful = DataFrame(CSV.File(joinpath("data", "faithful.csv")))
+faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "cleaned", "faithful.csv")))
 y = Float64.(faithful.eruptions)   # response: eruption duration (min)
 w = Float64.(faithful.waiting)     # covariate: waiting time (min)
 n = length(y)
