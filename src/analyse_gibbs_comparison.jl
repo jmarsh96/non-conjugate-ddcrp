@@ -108,7 +108,10 @@ function analyse_study(study)
 
         for (idx, r) in enumerate(eachrow(d))
             c = load_c(dir, r.chain_file)
-            Z = reduce(hcat, (labels_of(c[s, :]) for s in axes(c, 1)))'
+            Z = similar(c)
+            for s in axes(c, 1)
+                Z[s, :] = labels_of(c[s, :])
+            end
             ess_pairs = isempty(pairs) ? Float64[] :
                 [ess(Float64.(Z[:, i] .== Z[:, j])) for (i, j) in pairs]
             ess_pairs = filter(isfinite, ess_pairs)
