@@ -13,20 +13,8 @@ const THIN_FACTOR = 20
 const OUTDIR = joinpath(@__DIR__, "..", "results", is_test ? "old_faithful_test" : "old_faithful")
 mkpath(OUTDIR)
 
-const MODEL = GammaClusterShapeMarg()
+include(joinpath(@__DIR__, "old_faithful_common.jl"))
 
-α_init = 1.0
-s_init = 0.2
-decay_fn = DistanceDependentCRP.exp_decay
-α_prior_a = 1.0
-α_prior_b = 0.01
-s_prior_a = 1.0
-s_prior_b = 0.01
-const DDCRP_PARAMS = DDCRPParams(
-    α_init, s_init, decay_fn, α_prior_a, α_prior_b, s_prior_a, s_prior_b
-)
-
-const PRIORS = GammaClusterShapeMargPriors(α_a=2.0, α_b=0.5, β_a=2.0, β_b=0.5)
 const BIRTH_PROP = InverseGammaMomentMatch()
 const FIXED_PROP = Resample(InverseGammaMomentMatch())
 
@@ -39,17 +27,16 @@ const OPTS = MCMCOptions(
         :α_ddcrp => true,
         :s_ddcrp => false
     ),
-    prop_sds = Dict(:α => 0.5, :s_ddcrp => 0.3),
+    prop_sds = Dict(:α => PROP_SD_SHAPE, :s_ddcrp => 0.3),
     track_diagnostics = true
 )
 
 # load and clean data
 println("Loading Old Faithful data...")
-faithful = DataFrame(CSV.File(joinpath(@__DIR__, "..", "data", "cleaned", "faithful.csv")))
-y = Float64.(faithful.eruptions)   # response: eruption duration (min)
-w = Float64.(faithful.waiting)     # covariate: waiting time (min)
+y = Y_FAITHFUL
+w = W_FAITHFUL
 n = length(y)
-D = pairwise(Euclidean(), w)
+D = D_FAITHFUL
 println("  n = $n observations")
 println("  Eruption duration: [$(round(minimum(y), digits=2)), $(round(maximum(y), digits=2))] min")
 println("  Waiting time:      [$(minimum(w)), $(maximum(w))] min")

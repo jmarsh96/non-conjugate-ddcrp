@@ -24,15 +24,15 @@ end
 
 @everywhere begin
     using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
-    using DistanceDependentCRP, Statistics, StatsBase, Distributions, JLD2, Random
+    using DistanceDependentCRP, Statistics, StatsBase, Distributions, JLD2, Random, Distances
     include(joinpath(@__DIR__, "skewnormal_model.jl"))
+    include(joinpath(@__DIR__, "skewnormal_common.jl"))
 end
 
 include(joinpath(@__DIR__, "dengue_common.jl"))
 
 # Proposal parameters
 
-@everywhere const PROP_SDS = (ξ = 0.6, ω = 0.15, α = 1.2)   # within-cluster MH
 const SIGMA_RESAMPLE = 0.25                                  # NMM / LNMM resample σ
 const SIGMA_START = (ξ = 1.0, ω = 1.0, α = 1.0)              # before tuning
 
@@ -40,26 +40,6 @@ const SIGMA_START = (ξ = 1.0, ω = 1.0, α = 1.0)              # before tuning
 const SIGMA_GRID = IS_TEST ?
     (ξ = [1.0, 2.0], ω = [0.5, 1.0], α = [1.0, 5.0]) :
     (ξ = [0.5, 1.0, 2.0, 4.0], ω = [0.25, 0.5, 1.0], α = [1.0, 2.5, 5.0, 10.0])
-
-# Per-parameter proposal-family builders
-
-@everywhere function _birth_family(fam::Symbol, σ)
-    fam === :prior && return PriorProposal()
-    fam === :nmm   && return NormalMomentMatch(σ)
-    fam === :lnmm  && return LogNormalMomentMatch(σ)
-    fam === :ig    && return InverseGammaMomentMatch()
-    error("unknown family $fam")
-end
-
-# σ is a NamedTuple (ξ, ω, α) of birth standard deviations.
-@everywhere make_birth(fξ, fω, fα, σ) = MixedProposal((
-    ξ = _birth_family(fξ, σ.ξ), ω = _birth_family(fω, σ.ω), α = _birth_family(fα, σ.α)))
-
-@everywhere make_fdim(fξ, fω, fα, σr; resample::Bool) =
-    resample ? MixedFixedDim((
-        ξ = Resample(_birth_family(fξ, σr)),
-        ω = Resample(_birth_family(fω, σr)),
-        α = Resample(_birth_family(fα, σr)))) : NoUpdate()
 
 # Unit of work
 
@@ -156,46 +136,13 @@ const BURN_TUNE = IS_TEST ? 200 : 5_000
 const THIN = 5
 const SEEDS = IS_TEST ? [42, 202] : [42, 202, 7, 13]
 const TUNE_SEEDS = [42, 202]
-const K_TRUE = 3
-const N_OBS = 150
 
 const SKEW_DIR = IS_TEST ? joinpath(@__DIR__, "..", "results", "simulation_study", "skewnormal_test") :
     INFER_S ? joinpath(@__DIR__, "..", "results", "simulation_study", "skewnormal_infer_s") :
     joinpath(@__DIR__, "..", "results", "simulation_study", "skewnormal")
 mkpath(SKEW_DIR)
 
-# Simulate data
-
-function make_cluster_x(n::Int, centers::Vector{Float64}, σ::Float64; seed::Int=0)
-    rng = MersenneTwister(seed)
-    K = length(centers)
-    sizes = fill(n ÷ K, K)
-    sizes[end] += n - sum(sizes)
-    vcat([centers[k] .+ σ * randn(rng, sizes[k]) for k in 1:K]...)
-end
-
-const C_FIXED = vcat([fill(1 + (k - 1) * (N_OBS ÷ K_TRUE), N_OBS ÷ K_TRUE) for k in 1:K_TRUE]...)
-
-function simulate_skewnormal(c, pars; seed=1)
-    rng = MersenneTwister(seed)
-    labels = compute_table_assignments(c)
-    [rand(rng, SkewNormal(pars[labels[i]]...)) for i in eachindex(c)]
-end
-
-function build_scenario(x_centers, x_sd, pars; x_seed=0, y_seed=2)
-    x = make_cluster_x(N_OBS, x_centers, x_sd; seed=x_seed)
-    D = pairwise(Euclidean(), reshape(x, 1, :))
-    y = simulate_skewnormal(C_FIXED, pars; seed=y_seed)
-    return (y=y, D=D, c=C_FIXED, x=x, pars=pars)
-end
-
 Random.seed!(42)
-const SIM_OVERLAPPING = build_scenario(
-    [-3.0, 0.0, 3.0], 1.5, [(0.0, 2.0, 5.0), (4.0, 2.0, 0.0), (8.0, 2.0, -5.0)]; x_seed=0, y_seed=2)
-const SIM_SEPARATED = build_scenario(
-    [-6.0, 0.0, 6.0], 1.0, [(0.0, 1.5, 5.0), (8.0, 1.5, 0.0), (16.0, 1.5, -5.0)]; x_seed=1, y_seed=3)
-const SCENARIOS = [("overlapping", SIM_OVERLAPPING), ("separated", SIM_SEPARATED)]
-
 jldsave(joinpath(SKEW_DIR, "sim_data.jld2");
         sim_overlapping=SIM_OVERLAPPING, sim_separated=SIM_SEPARATED)
 println("Saved sim_data.jld2")
@@ -203,12 +150,6 @@ for (sname, sim) in SCENARIOS
     @printf("%-12s y: min=%.2f max=%.2f  (true (ξ,ω,α) = %s)\n",
             sname, minimum(sim.y), maximum(sim.y), string(sim.pars))
 end
-
-# Shared model settings
-
-const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
-# Diffuse priors.
-const PRIORS = SkewNormalClustersPriors(ξ_m=0.0, ξ_s=50.0, ω_a=2.0, ω_b=2.0, α_m=0.0, α_s=10.0)
 
 # Config builder
 

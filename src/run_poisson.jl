@@ -97,41 +97,14 @@ const BURN_SWEEP = IS_TEST ? 200 : 10_000
 const N_SAMPLES_TUNE = IS_TEST ? 1_000 : 60_000
 const BURN_TUNE = IS_TEST ? 200 : 10_000
 const THIN = 5
-const K_TRUE = 3
-const N_OBS = 150
 
 const POISSON_DIR = IS_TEST ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_test") :
     INFER_S ? joinpath(@__DIR__, "..", "results", "simulation_study", "poisson_infer_s") :
     joinpath(@__DIR__, "..", "results", "simulation_study", "poisson")
 mkpath(POISSON_DIR)
 
-# Simulate data
-
-function make_cluster_x(n::Int, centers::Vector{Float64}, σ::Float64; seed::Int=0)
-    rng = MersenneTwister(seed)
-    K = length(centers)
-    sizes = fill(n ÷ K, K)
-    sizes[end] += n - sum(sizes)
-    vcat([centers[k] .+ σ * randn(rng, sizes[k]) for k in 1:K]...)
-end
-
+include(joinpath(@__DIR__, "poisson_common.jl"))
 Random.seed!(42)
-x_centers = [-3.0, 0.0, 3.0]
-x = make_cluster_x(N_OBS, x_centers, 1.5; seed=0)
-
-# Pointer representation: each observation points to the first member of its cluster.
-const C_FIXED = vcat([fill(1 + (k - 1) * (N_OBS ÷ K_TRUE), N_OBS ÷ K_TRUE) for k in 1:K_TRUE]...)
-const D_SIM = pairwise(Euclidean(), reshape(x, 1, :))
-
-function simulate_poisson(c, λs; seed=1)
-    rng = MersenneTwister(seed)
-    labels = compute_table_assignments(c)   # convert pointer repr → labels 1…K
-    [rand(rng, Poisson(λs[labels[i]])) for i in eachindex(c)]
-end
-
-const Y_OVERLAPPING = simulate_poisson(C_FIXED, [1.0, 4.0, 7.0]; seed=2)
-
-const SIM_OVERLAPPING = (y=Y_OVERLAPPING, D=D_SIM, c=C_FIXED, x=x, λs=[1.0, 4.0, 7.0])
 
 jldsave(joinpath(POISSON_DIR, "sim_data.jld2"); sim_overlapping=SIM_OVERLAPPING)
 println("Saved sim_data.jld2")
@@ -139,14 +112,6 @@ println("Saved sim_data.jld2")
     "Overlapping y: min=%d max=%d  (true λ = %s)\n",
     minimum(Y_OVERLAPPING), maximum(Y_OVERLAPPING), join(SIM_OVERLAPPING.λs, ", ")
 )
-
-const SCENARIOS = [("overlapping", SIM_OVERLAPPING)]
-
-# Shared model settings
-
-const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)
-const PRIORS = PoissonClusterRatesPriors(1.0, 0.1)
-const PRIORS_MARG = PoissonClusterRatesMargPriors(1.0, 0.1)
 
 const σ_NMM = 0.5
 const σ_LNMM = 0.5

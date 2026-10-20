@@ -109,3 +109,33 @@ function split_rhat(chains::AbstractVector{<:AbstractVector{<:Real}})
     W > 0 || return NaN
     return sqrt(((L - 1) / L * W + B / L) / W)
 end
+
+# Study setup shared by run_dengue.jl and run_gibbs_comparison.jl.
+const HOP_RADIUS = 2
+const KERNEL_RATE = 1.0
+
+function load_dengue_study(uf::Integer, year::Integer; hop_radius::Integer = HOP_RADIUS)
+    data_file = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(uf)_$(year).csv")
+    isfile(data_file) || error("""
+        Missing $data_file
+        Run: julia --project=. src/prepare_dengue_data.jl --uf $uf --year $year""")
+    adj_file = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(uf)_adjacency.csv")
+    isfile(adj_file) || error("""
+        Missing $adj_file
+        Run: Rscript src/prepare_dengue_adjacency.R --uf $uf""")
+
+    df = CSV.read(data_file, DataFrame)
+    y = Int.(df.y)
+    E = Float64.(df.pop) ./ 1e5          # exposure: population per 100k
+    A = load_adjacency(adj_file, Int.(df.geocode))
+    nbrs = neighbour_lists(A)
+    H = hop_distances(nbrs)
+    any(isinf, H) && error("contiguity graph is disconnected; rebuild the edge list")
+    D = hop_window_D(H, hop_radius)
+
+    ρ_bar = sum(y) / sum(E)
+    ρ_a = 1.5
+    priors = NegBinPopulationRatesPriors(ρ_a = ρ_a, ρ_b = ρ_a / ρ_bar, r_a = 2.0, r_b = 0.5)
+    priors_pois = PoissonPopulationRatesPriors(ρ_a, ρ_a / ρ_bar)
+    return (; data_file, df, y, E, A, nbrs, H, D, ρ_bar, ρ_a, priors, priors_pois)
+end
