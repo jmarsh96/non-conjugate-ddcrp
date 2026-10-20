@@ -20,7 +20,7 @@ the paper. The dengue maps are drawn in R and need `sf`, `ggplot2` and `dplyr`.
 
 ## Running things
 
-There are four studies. For each one, the `run_` script does the MCMC and the `analyse_` script
+There are four studies, plus a comparison of samplers that reuses all four. For each one, the `run_` script does the MCMC and the `analyse_` script
 makes the tables and figures from its output, so run them in that order.
 
 Skew-normal simulation study (Section 3.1 and Supplement S6). Takes about 5 hours.
@@ -58,6 +58,18 @@ julia --project=. src/run_old_faithful.jl
 julia --project=. src/analyse_old_faithful.jl
 ```
 
+Auxiliary Gibbs against reversible jump, on all four studies. Run it after them, since it reads
+their tuned proposals. A timing pilot sets the chain lengths (`--pilot` repeats it). About 2 hours
+per study on 8 workers; dengue needs a cluster.
+
+```bash
+julia --project=. src/run_gibbs_comparison.jl --study skewnormal
+julia --project=. src/run_gibbs_comparison.jl --study poisson
+julia --project=. src/run_gibbs_comparison.jl --study dengue
+julia --project=. src/run_gibbs_comparison.jl --study old_faithful
+julia --project=. src/analyse_gibbs_comparison.jl
+```
+
 The run scripts use 8 local worker processes unless told otherwise, and `--slurm` makes them
 use a Slurm allocation instead. Seeds are set inside the scripts.
 
@@ -88,6 +100,7 @@ themselves are not included as they come to tens of gigabytes; the run scripts r
 - `results/real_data/dengue/` (`dengue_numbers.tex` lists the numbers quoted in the text)
 - `results/simulation_study/poisson/`
 - `results/old_faithful/`
+- `results/gibbs_comparison/` (`gibbs_comparison_numbers.tex` lists the numbers for the text)
 
 The paper lives in its own repo. If it is cloned into `docs/ddcrp-paper/`, the analyse scripts
 will also copy the figures and tables into it.

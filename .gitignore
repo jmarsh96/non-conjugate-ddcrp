@@ -7,7 +7,7 @@ src/slurm/
 *.log
 Manifest.toml.bak
 
-# results: only the small outputs of the four paper studies are tracked
+# results: only the small outputs of the paper studies are tracked
 results/**
 !results/**/
 !results/simulation_study/skewnormal/**/*.csv
@@ -22,6 +22,9 @@ results/**
 !results/real_data/dengue/**/*.png
 !results/old_faithful/**/*.csv
 !results/old_faithful/**/*.png
+!results/gibbs_comparison/**/*.csv
+!results/gibbs_comparison/**/*.tex
+!results/gibbs_comparison/**/*.png
 
 # superseded outputs no script writes any more
 results/simulation_study/skewnormal/*/table_overlapping.tex
