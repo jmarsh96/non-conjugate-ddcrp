@@ -11,10 +11,10 @@
 #   CMP_ARGS="--pilot" bash src/slurm/submit_gibbs_comparison.sh   # remeasure timings
 #
 # Sizing (chains / workers, wall-clock per chain, memory per worker at the N_MAX cap):
-#   skewnormal    88 chains / 30 workers, 10 min, ~2.5 GB  -> 3 rounds, ~45 min
-#   poisson       48 chains / 24 workers, 10 min, ~1.5 GB  -> 2 rounds, ~30 min
-#   dengue        40 chains / 20 workers, 60 min, ~5 GB    -> 2 rounds, ~2.5 h
-#   old_faithful  48 chains / 24 workers, 15 min, ~2.5 GB  -> 2 rounds, ~45 min
+#   skewnormal   160 chains / 30 workers, 10 min, ~2.5 GB  -> 6 rounds, ~1.2 h
+#   poisson       84 chains / 24 workers, 10 min, ~1.5 GB  -> 4 rounds, ~45 min
+#   dengue        76 chains / 20 workers, 60 min, ~5 GB    -> 4 rounds, ~4.5 h
+#   old_faithful  84 chains / 24 workers, 15 min, ~2.5 GB  -> 4 rounds, ~1.2 h
 # Each also runs a pilot first (a few minutes). Times requested are ~3x that.
 # ============================================================================
 

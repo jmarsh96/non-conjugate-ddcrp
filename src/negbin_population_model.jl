@@ -215,6 +215,10 @@ function table_contribution(::NegBinPopulationRates, table::AbstractVector{Int},
     return log_lik + log_prior
 end
 
+# table_contribution factorises as Σ log f(y_i | ρ, r) + this
+DD.cluster_logprior(::NegBinPopulationRates, θ::NamedTuple, priors::NegBinPopulationRatesPriors) =
+    logpdf(ρ_prior(priors), θ.ρ) + logpdf(r_prior(priors), θ.r)
+
 function posterior(model::NegBinPopulationRates, data, state::NegBinPopulationRatesState,
         priors::NegBinPopulationRatesPriors, log_DDCRP::AbstractMatrix)
     return sum(table_contribution(model, table, state, data, priors)

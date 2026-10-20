@@ -236,6 +236,11 @@ function table_contribution(::SkewNormalClusters, table::AbstractVector{Int},
     return log_lik + log_prior
 end
 
+# table_contribution factorises as Σ log f(y_i | ξ, ω, α) + this
+DD.cluster_logprior(::SkewNormalClusters, ρ::NamedTuple, priors::SkewNormalClustersPriors) =
+    logpdf(Normal(priors.ξ_m, priors.ξ_s), ρ.ξ) + logpdf(InverseGamma(priors.ω_a, priors.ω_b), ρ.ω) +
+    logpdf(Normal(priors.α_m, priors.α_s), ρ.α)
+
 function posterior(model::SkewNormalClusters, data, state::SkewNormalClustersState,
         priors::SkewNormalClustersPriors, log_DDCRP::AbstractMatrix)
     return sum(table_contribution(model, table, state, data, priors)

@@ -1,5 +1,6 @@
 # Auxiliary Gibbs (Supplement S1) against reversible jump on the same posterior, from four
 # shared starts and with equal wall-clock per chain (set by the pilot in pilot_timing.csv).
+# RJ runs as published and as the Metropolised Algorithm 8 (`AuxiliaryMH`, "RJ pool").
 #
 # Old Faithful first tunes its LNMM birth σ by ESJD(K), like the other studies (--tune reruns it).
 #
@@ -51,6 +52,7 @@ end
 # Settings
 
 const M_POOL = [1, 3, 10, 30]
+const M_POOL_MH = [1, 3, 10]
 const STARTS = [:singletons, :one_cluster, :prior_a, :prior_b]
 const START_SEEDS = Dict(:singletons => 1001, :one_cluster => 1002, :prior_a => 1003, :prior_b => 1004)
 
@@ -156,6 +158,7 @@ end
 
 linkname(::UniformLink) = "uniform"
 linkname(::PriorLink) = "prior"
+linkname(::MetropolisedPriorLink) = "metropolised"
 
 function sampler_configs(spec)
     cfgs = NamedTuple[]
@@ -171,6 +174,14 @@ function sampler_configs(spec)
         push!(cfgs, (label = lbl, sampler = "rj", q = String(q), m = 0, link = linkname(link),
                      fdim = fdim_name, model = spec.model, priors = spec.priors, proposal = qp,
                      fdim_prop = fdim, link_prop = link))
+    end
+    # Metropolised Algorithm 8 (m = 1: RJ No Update, scored on the moving set only)
+    for (q, link) in ((:mm, PriorLink()), (:mm, MetropolisedPriorLink()), (:prior, MetropolisedPriorLink())),
+            m in M_POOL_MH
+        qp = q === :mm ? spec.q_mm : spec.q_prior
+        push!(cfgs, (label = "RJ pool q:$(q) link:$(linkname(link)) m=$(m)", sampler = "aux_mh", q = String(q),
+                     m = m, link = linkname(link), fdim = "none", model = spec.model, priors = spec.priors,
+                     proposal = AuxiliaryMH(qp, m), fdim_prop = NoUpdate(), link_prop = link))
     end
     for q in (:mm, :prior), m in M_POOL
         qp = q === :mm ? spec.q_mm : spec.q_prior

@@ -58,9 +58,11 @@ julia --project=. src/run_old_faithful.jl
 julia --project=. src/analyse_old_faithful.jl
 ```
 
-Auxiliary Gibbs against reversible jump, on all four studies. Run it after them, since it reads
-their tuned proposals. A timing pilot sets the chain lengths (`--pilot` repeats it). About 2 hours
-per study on 8 workers; dengue needs a cluster.
+Auxiliary Gibbs against reversible jump, on all four studies. Reversible jump runs both as
+published and as the Metropolised Algorithm 8 ("RJ pool"), which adds an auxiliary pool to births
+and deaths and an optional partition-changing link proposal. Run it after the studies, since it
+reads their tuned proposals. A timing pilot sets the chain lengths (`--pilot` repeats it). About 2
+hours per study on 8 workers; dengue needs a cluster.
 
 ```bash
 julia --project=. src/run_gibbs_comparison.jl --study skewnormal
