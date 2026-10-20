@@ -44,6 +44,28 @@ function chain_psm(c)
     return P ./ size(c, 1)
 end
 
+# effective_sample_size's estimator (Geyer initial positive, lags ≤ min(n/2, 1000)) without its
+# per-lag allocations, which make 500 pairs × 224 chains take a day
+function ess(x::AbstractVector{<:Real})
+    n = length(x); v = var(x)
+    v ≈ 0 && return effective_sample_size(x)
+    xc = x .- mean(x)
+    function acf(k)
+        s = 0.0
+        @inbounds @simd for t in 1:(n-k)
+            s += xc[t] * xc[t+k]
+        end
+        return s / ((n - k) * v)
+    end
+    τ = 1.0
+    for k in 1:2:(min(n ÷ 2, 1000) - 1)
+        g = acf(k) + acf(k + 1)
+        g < 0 && break
+        τ += 2g
+    end
+    return n / τ
+end
+
 tv(p, q) = 0.5 * sum(abs.(p .- q))
 pk_vec(k, kmax) = [mean(k .== j) for j in 1:kmax]
 
@@ -58,7 +80,8 @@ function analyse_study(study)
     traces = Dict{Tuple{String,String},Tuple{Vector{Int},Vector{Float64}}}()
     for scen in unique(df.scenario)
         d = df[df.scenario .== scen, :]
-        psm = Dict{String,Matrix{Float64}}(); ktr = Dict{String,Vector{Int}}()
+        println("$study / $scen: $(nrow(d)) chains"); flush(stdout)
+        psm =Dict{String,Matrix{Float64}}(); ktr = Dict{String,Vector{Int}}()
         for r in eachrow(d)
             c = load_c(dir, r.chain_file)
             psm[r.chain_file] = chain_psm(c)
@@ -87,7 +110,7 @@ function analyse_study(study)
             c = load_c(dir, r.chain_file)
             Z = reduce(hcat, (labels_of(c[s, :]) for s in axes(c, 1)))'
             ess_pairs = isempty(pairs) ? Float64[] :
-                [effective_sample_size(Float64.(Z[:, i] .== Z[:, j])) for (i, j) in pairs]
+                [ess(Float64.(Z[:, i] .== Z[:, j])) for (i, j) in pairs]
             ess_pairs = filter(isfinite, ess_pairs)
             b = [binder(collect(Z[s, :]), best_z) for s in axes(Z, 1)]
             Δ = abs.(psm[r.chain_file] .- P_ref)
@@ -96,7 +119,7 @@ function analyse_study(study)
                 chain_file = r.chain_file, scenario = scen, n_pairs = length(pairs),
                 ess_pairs_med = isempty(ess_pairs) ? NaN : median(ess_pairs),
                 ess_pairs_p10 = isempty(ess_pairs) ? NaN : quantile(ess_pairs, 0.1),
-                ess_binder = std(b) > 0 ? effective_sample_size(b) : NaN,
+                ess_binder = std(b) > 0 ? ess(b) : NaN,
                 psm_mad_ref = mean(upper), psm_max_ref = maximum(upper),
                 tv_K_ref = tv(pk_vec(ktr[r.chain_file], kmax), pk_ref),
             ))
