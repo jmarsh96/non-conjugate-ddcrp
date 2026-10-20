@@ -1,8 +1,10 @@
 # Auxiliary Gibbs (Supplement S1) against reversible jump on the same posterior, from four
 # shared starts and with equal wall-clock per chain (set by the pilot in pilot_timing.csv).
 #
+# Old Faithful first tunes its LNMM birth σ by ESJD(K), like the other studies (--tune reruns it).
+#
 #   julia --project=. src/run_gibbs_comparison.jl --study {skewnormal|poisson|dengue|old_faithful}
-#         [--pilot] [--test] [--slurm] [--workers N]
+#         [--pilot] [--tune] [--test] [--slurm] [--workers N]
 
 using CSV, DataFrames, Distances, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -17,6 +19,7 @@ STUDY in ("skewnormal", "poisson", "dengue", "old_faithful") ||
 const USE_SLURM = "--slurm" in ARGS
 const IS_TEST = "--test" in ARGS
 const FORCE_PILOT = "--pilot" in ARGS
+const FORCE_TUNE = "--tune" in ARGS
 
 if USE_SLURM
     using SlurmClusterManager
@@ -62,6 +65,13 @@ const BURN_FRAC = 0.1
 const MAX_STORED = IS_TEST ? 1_000 : 25_000
 @everywhere const PK_MAX = 30
 
+# Old Faithful σ tuning, as in run_skewnormal.jl
+const TUNE_GRID = IS_TEST ? [0.25, 1.0] : [0.1, 0.25, 0.5, 1.0, 2.0]
+const TUNE_SEEDS = [42, 202]
+const N_TUNE = IS_TEST ? 1_000 : 40_000
+const BURN_TUNE = IS_TEST ? 200 : 5_000
+const THIN_TUNE = 5
+
 const ROOT = joinpath(SRC, "..", "results", IS_TEST ? "gibbs_comparison_test" : "gibbs_comparison")
 const OUTDIR = joinpath(ROOT, STUDY)
 mkpath(joinpath(OUTDIR, "chains"))
@@ -79,6 +89,8 @@ end
 # Study specifications
 
 const RESULTS = joinpath(SRC, "..", "results")
+const OF_TUNED_FILE = IS_TEST ? joinpath(OUTDIR, "tuned_sigma.csv") :
+    joinpath(RESULTS, "old_faithful", "tuned_sigma.csv")
 
 function study_spec(study)
     if study == "skewnormal"
@@ -127,11 +139,12 @@ function study_spec(study)
         )
     else
         # IGMM falls back to the prior for a Gamma shape, so q_prior is the published proposal
+        σ = CSV.read(OF_TUNED_FILE, DataFrame).σ[1]
         return (
             scenarios = [(name = "faithful", y = Y_FAITHFUL, D = D_FAITHFUL, E = nothing, true_c = nothing)],
             model = MODEL, priors = PRIORS, ddcrp = DDCRP_PARAMS,
             prop_sds = Dict(:α => PROP_SD_SHAPE),
-            q_mm = LogNormalMomentMatch(0.5), q_mm_name = "LNMM σ=0.5",
+            q_mm = LogNormalMomentMatch(σ), q_mm_name = "LNMM σ=$(σ) (tuned)",
             q_prior = PriorProposal(),
             rj = [(:prior, UniformLink(), Resample(InverseGammaMomentMatch()), "resample"),
                   (:prior, UniformLink(), NoUpdate(), "none"),
@@ -140,8 +153,6 @@ function study_spec(study)
         )
     end
 end
-
-const SPEC = study_spec(STUDY)
 
 linkname(::UniformLink) = "uniform"
 linkname(::PriorLink) = "prior"
@@ -263,6 +274,36 @@ end
     end
 end
 
+# Old Faithful: tune the LNMM birth σ for RJ No Update by ESJD(K)
+
+tuned_now = false
+if STUDY == "old_faithful" && (FORCE_TUNE || !isfile(OF_TUNED_FILE))
+    tcfgs = [(model = MODEL, priors = PRIORS, ddcrp = DDCRP_PARAMS, prop_sds = Dict(:α => PROP_SD_SHAPE),
+              proposal = LogNormalMomentMatch(σ), init_proposal = LogNormalMomentMatch(σ),
+              fdim_prop = NoUpdate(), link_prop = UniformLink(), y = Y_FAITHFUL, D = D_FAITHFUL,
+              E = nothing, start = :prior_a, start_seed = seed, σ = σ, n_samples = N_TUNE,
+              burn = BURN_TUNE, thin = THIN_TUNE)
+             for σ in TUNE_GRID for seed in TUNE_SEEDS]
+    println("Tuning LNMM σ: $(length(tcfgs)) chains of $(N_TUNE) iterations")
+    tune = DataFrame(pmap(tcfgs) do cfg
+        samples, _ = run_chain(cfg, cfg.n_samples)
+        k = Float64.(calculate_n_clusters(samples.c[(cfg.burn + 1):cfg.thin:end, :]))
+        (σ = cfg.σ, seed = cfg.start_seed, esjd_K = mean(diff(k) .^ 2), ess_K = effective_sample_size(k))
+    end)
+    by_σ = combine(groupby(tune, :σ), :esjd_K => mean => :esjd_K, :ess_K => mean => :ess_K)
+    best = by_σ.σ[argmax(by_σ.esjd_K)]
+    for r in eachrow(by_σ)
+        @printf("  σ = %-5.2f  ESJD(K) = %.4f  ESS(K) = %6.1f%s\n", r.σ, r.esjd_K, r.ess_K,
+                r.σ == best ? "  <- selected" : "")
+    end
+    mkpath(dirname(OF_TUNED_FILE))
+    CSV.write(joinpath(dirname(OF_TUNED_FILE), "summary_tune.csv"), tune)
+    CSV.write(OF_TUNED_FILE, DataFrame(param = ["α"], σ = [best]))
+    global tuned_now = true
+end
+
+const SPEC = study_spec(STUDY)
+
 # Pilot
 
 const CONFIGS = sampler_configs(SPEC)
@@ -271,7 +312,7 @@ const PILOT_FILE = joinpath(OUTDIR, "pilot_timing.csv")
 println("Study $(STUDY): $(length(CONFIGS)) samplers × $(length(SPEC.scenarios)) scenario(s) × $(length(STARTS)) starts")
 println("  q_mm = $(SPEC.q_mm_name)")
 
-if FORCE_PILOT || !isfile(PILOT_FILE)
+if FORCE_PILOT || tuned_now || !isfile(PILOT_FILE)
     pcfgs = [make_run(c, sc, :prior_a; n_samples = N_PILOT, burn = 0, thin = 1, save_chain = false)
              for c in CONFIGS for sc in SPEC.scenarios]
     println("Pilot: $(length(pcfgs)) runs of $(N_PILOT) iterations")
