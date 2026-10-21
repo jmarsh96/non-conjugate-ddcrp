@@ -1,0 +1,23 @@
+label,scenario,n_pilot,sec_per_iter
+RJ q:mm link:uniform,overlapping,300,0.002675225896666667
+RJ q:mm link:uniform,separated,300,0.0025914062999999998
+RJ q:mm link:prior,overlapping,300,0.0022609795833333337
+RJ q:mm link:prior,separated,300,0.00146196505
+RJ q:prior link:uniform,overlapping,300,0.0024182306800000003
+RJ q:prior link:uniform,separated,300,0.002576378606666667
+Gibbs q:mm m=1,overlapping,300,0.004517466836666667
+Gibbs q:mm m=1,separated,300,0.004466518643333334
+Gibbs q:mm m=3,overlapping,300,0.004922379266666667
+Gibbs q:mm m=3,separated,300,0.004833631323333333
+Gibbs q:mm m=10,overlapping,300,0.006773396696666666
+Gibbs q:mm m=10,separated,300,0.0065827371299999994
+Gibbs q:mm m=30,overlapping,300,0.011656133626666666
+Gibbs q:mm m=30,separated,300,0.011272311583333333
+Gibbs q:prior m=1,overlapping,300,0.00402610951
+Gibbs q:prior m=1,separated,300,0.004519235139999999
+Gibbs q:prior m=3,overlapping,300,0.004546834656666667
+Gibbs q:prior m=3,separated,300,0.0046845882233333335
+Gibbs q:prior m=10,overlapping,300,0.00591206538
+Gibbs q:prior m=10,separated,300,0.005643749876666667
+Gibbs q:prior m=30,overlapping,300,0.008921604936666667
+Gibbs q:prior m=30,separated,300,0.008769014773333333

@@ -1,0 +1,11 @@
+label,scenario,n_pilot,sec_per_iter
+RJ q:mm link:prior,parana_2024,300,0.009776020730000001
+RJ q:prior link:prior,parana_2024,300,0.00975005932
+Gibbs q:mm m=1,parana_2024,300,0.051660824103333336
+Gibbs q:mm m=3,parana_2024,300,0.05327900989
+Gibbs q:mm m=10,parana_2024,300,0.05601101882333333
+Gibbs q:mm m=30,parana_2024,300,0.06589974440333334
+Gibbs q:prior m=1,parana_2024,300,0.05077426449
+Gibbs q:prior m=3,parana_2024,300,0.05243319352333333
+Gibbs q:prior m=10,parana_2024,300,0.05631428228333333
+Gibbs q:prior m=30,parana_2024,300,0.06460399225666666

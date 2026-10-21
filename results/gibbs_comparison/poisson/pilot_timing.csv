@@ -1,0 +1,13 @@
+label,scenario,n_pilot,sec_per_iter
+Collapsed Gibbs,overlapping,300,0.00229254644
+RJ q:mm link:uniform,overlapping,300,0.0014606767766666667
+RJ q:mm link:prior,overlapping,300,0.00142785454
+RJ q:prior link:uniform,overlapping,300,0.0015212664633333334
+Gibbs q:mm m=1,overlapping,300,0.002611912456666667
+Gibbs q:mm m=3,overlapping,300,0.00277437548
+Gibbs q:mm m=10,overlapping,300,0.0032262509933333335
+Gibbs q:mm m=30,overlapping,300,0.00450405247
+Gibbs q:prior m=1,overlapping,300,0.0026039291133333337
+Gibbs q:prior m=3,overlapping,300,0.00292882388
+Gibbs q:prior m=10,overlapping,300,0.0037001271233333337
+Gibbs q:prior m=30,overlapping,300,0.0059841968333333335

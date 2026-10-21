@@ -1,0 +1,7 @@
+kind,setting,scale,attempts,esjd_K,tilt,p_cross
+contrast,FitN,2.0,0,0.08047669314961942,,
+contrast,FitT,2.0,0,0.08837990999499973,,
+contrast,ZeroT,2.0,0,0.08978276570920608,,
+best_contrast,ZeroT,NaN,0,NaN,,
+two_anchor,two_anchor,10.0,15,0.11754819712206234,,
+pilot,pilot,10.0,15,0.11679815545308073,1.0,0.5

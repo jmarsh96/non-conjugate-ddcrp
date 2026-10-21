@@ -1,0 +1,18 @@
+label,scenario,rep,sec_per_iter
+Collapsed Gibbs,overlapping,1,0.00844865891
+RJ,overlapping,1,0.0020467441
+RJ pool,overlapping,1,0.0050612358150000005
+RJ + coupled FitT,overlapping,1,0.001613840535
+RJ pool + coupled FitT,overlapping,1,0.005591051455
+RJ + coupled ZeroT,overlapping,1,0.0020828907099999998
+RJ pool + coupled ZeroT,overlapping,1,0.00113651049
+RJ + coupled FitN,overlapping,1,0.00218701544
+RJ pool + coupled FitN,overlapping,1,0.000984122685
+RJ + informed,overlapping,1,0.002547390855
+RJ pool + informed,overlapping,1,0.0051149864
+RJ + two-anchor,overlapping,1,0.004284303595
+RJ pool + two-anchor,overlapping,1,0.001815944685
+RJ + coupled ZeroT + two-anchor,overlapping,1,0.0026490961899999998
+RJ pool + coupled ZeroT + two-anchor,overlapping,1,0.001776110885
+Gibbs m=3,overlapping,1,0.0023849810599999998
+Gibbs m=3 + two-anchor,overlapping,1,0.006693987925

@@ -1,0 +1,13 @@
+label,scenario,n_pilot,sec_per_iter
+RJ q:prior link:uniform + Resample,faithful,300,0.0037480767433333336
+RJ q:prior link:uniform,faithful,300,0.003587454523333333
+RJ q:mm link:uniform,faithful,300,0.00365937012
+RJ q:mm link:prior,faithful,300,0.0031950406066666667
+Gibbs q:mm m=1,faithful,300,0.006142328896666667
+Gibbs q:mm m=3,faithful,300,0.0062938863033333335
+Gibbs q:mm m=10,faithful,300,0.0071684277466666675
+Gibbs q:mm m=30,faithful,300,0.009726874216666667
+Gibbs q:prior m=1,faithful,300,0.006016696076666667
+Gibbs q:prior m=3,faithful,300,0.0062865782166666665
+Gibbs q:prior m=10,faithful,300,0.008181703333333333
+Gibbs q:prior m=30,faithful,300,0.01056382536

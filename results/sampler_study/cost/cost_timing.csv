@@ -1,0 +1,77 @@
+label,scenario,rep,sec_per_iter
+RJ,overlapping,1,0.0028416414099999994
+RJ,separated,1,0.0012338209259999998
+RJ,aba,1,0.0036385619160000005
+RJ,k5,1,0.005717002621999999
+RJ pool,overlapping,1,0.0015944830849999997
+RJ pool,separated,1,0.00077370315
+RJ pool,aba,1,0.001216946588
+RJ pool,k5,1,0.0029587343200000006
+RJ + coupled FitT,overlapping,1,0.0029049271920000004
+RJ + coupled FitT,separated,1,0.0012466056019999998
+RJ + coupled FitT,aba,1,0.003832439537
+RJ + coupled FitT,k5,1,0.005094286005
+RJ pool + coupled FitT,overlapping,1,0.001631819577
+RJ pool + coupled FitT,separated,1,0.0008348994539999999
+RJ pool + coupled FitT,aba,1,0.001335679486
+RJ pool + coupled FitT,k5,1,0.00203105457
+RJ + coupled ZeroT,overlapping,1,0.0034245678550000004
+RJ + coupled ZeroT,separated,1,0.001264673214
+RJ + coupled ZeroT,aba,1,0.0030512406539999998
+RJ + coupled ZeroT,k5,1,0.005496945728
+RJ pool + coupled ZeroT,overlapping,1,0.001156775768
+RJ pool + coupled ZeroT,separated,1,0.00036883888600000006
+RJ pool + coupled ZeroT,aba,1,0.001354459783
+RJ pool + coupled ZeroT,k5,1,0.00311127105
+RJ + coupled FitN,overlapping,1,0.0029782533060000002
+RJ + coupled FitN,separated,1,0.0012830397769999999
+RJ + coupled FitN,aba,1,0.0036662355560000003
+RJ + coupled FitN,k5,1,0.005462450564000001
+RJ pool + coupled FitN,overlapping,1,0.0017189073909999997
+RJ pool + coupled FitN,separated,1,0.0008763306710000001
+RJ pool + coupled FitN,aba,1,0.001223790749
+RJ pool + coupled FitN,k5,1,0.0018318929510000002
+RJ + informed,overlapping,1,0.0027485935999999995
+RJ + informed,separated,1,0.001844594646
+RJ + informed,aba,1,0.003090933638
+RJ + informed,k5,1,0.008297799095
+RJ pool + informed,overlapping,1,0.002447287217
+RJ pool + informed,separated,1,0.002210495829
+RJ pool + informed,aba,1,0.002862346412
+RJ pool + informed,k5,1,0.006912025886
+RJ + two-anchor,overlapping,1,0.004056208203000001
+RJ + two-anchor,separated,1,0.001710181359
+RJ + two-anchor,aba,1,0.003995993247
+RJ + two-anchor,k5,1,0.007060703594
+RJ pool + two-anchor,overlapping,1,0.0017307923750000001
+RJ pool + two-anchor,separated,1,0.000790178258
+RJ pool + two-anchor,aba,1,0.001998368732
+RJ pool + two-anchor,k5,1,0.0037843236249999997
+RJ + coupled ZeroT + two-anchor,overlapping,1,0.0035362361700000005
+RJ + coupled ZeroT + two-anchor,separated,1,0.001718254714
+RJ + coupled ZeroT + two-anchor,aba,1,0.004231056507
+RJ + coupled ZeroT + two-anchor,k5,1,0.007240684023999999
+RJ pool + coupled ZeroT + two-anchor,overlapping,1,0.0025019802059999996
+RJ pool + coupled ZeroT + two-anchor,separated,1,0.001348153054
+RJ pool + coupled ZeroT + two-anchor,aba,1,0.002109058696
+RJ pool + coupled ZeroT + two-anchor,k5,1,0.002908359037
+Gibbs m=3,overlapping,1,0.004311464166
+Gibbs m=3,separated,1,0.0034453842740000003
+Gibbs m=3,aba,1,0.0037749457749999995
+Gibbs m=3,k5,1,0.010395666259999999
+Gibbs m=3 + two-anchor,overlapping,1,0.004719739783
+Gibbs m=3 + two-anchor,separated,1,0.003823169124
+Gibbs m=3 + two-anchor,aba,1,0.00450059502
+Gibbs m=3 + two-anchor,k5,1,0.010968706810000001
+RJ + pilot two-anchor,overlapping,1,0.005100192604
+RJ + pilot two-anchor,separated,1,0.0032414406200000005
+RJ + pilot two-anchor,aba,1,0.005979882163
+RJ + pilot two-anchor,k5,1,0.009642714473999999
+RJ pool + pilot two-anchor,overlapping,1,0.0033678739879999995
+RJ pool + pilot two-anchor,separated,1,0.0023274220300000003
+RJ pool + pilot two-anchor,aba,1,0.004532461169999999
+RJ pool + pilot two-anchor,k5,1,0.006677028961
+Gibbs m=3 + pilot two-anchor,overlapping,1,0.005727366831
+Gibbs m=3 + pilot two-anchor,separated,1,0.004985350766
+Gibbs m=3 + pilot two-anchor,aba,1,0.006969985406999999
+Gibbs m=3 + pilot two-anchor,k5,1,0.014274211158
