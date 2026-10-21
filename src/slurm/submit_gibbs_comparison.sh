@@ -9,12 +9,18 @@
 #   bash src/slurm/submit_gibbs_comparison.sh skewnormal dengue    # a subset
 #   CMP_ARGS="--test" bash src/slurm/submit_gibbs_comparison.sh    # quick check
 #   CMP_ARGS="--pilot" bash src/slurm/submit_gibbs_comparison.sh   # remeasure timings
+#   bash src/slurm/submit_gibbs_comparison.sh sampler_study        # only the sampler study confirm
 #
+# "sampler_study" (in the default set) runs run_sampler_study.jl --stage confirm on the finalists
+# (SAMPLER_CONFIGS) and its analysis: 6 configs x 4 scenarios x 3 reps x 4 starts = 288 chains of
+# 600 s on 32 workers -> 9 rounds, ~1.7 h. Its analysis runs in the same job.
+#
+# Existing pilot_timing.csv files are kept; configs missing from them (the new moves) are piloted.
 # Sizing (chains / workers, wall-clock per chain, memory per worker at the N_MAX cap):
-#   skewnormal   160 chains / 30 workers, 10 min, ~2.5 GB  -> 6 rounds, ~1.2 h
-#   poisson       84 chains / 24 workers, 10 min, ~1.5 GB  -> 4 rounds, ~45 min
-#   dengue        76 chains / 20 workers, 60 min, ~5 GB    -> 4 rounds, ~4.5 h
-#   old_faithful  84 chains / 24 workers, 15 min, ~2.5 GB  -> 4 rounds, ~1.2 h
+#   skewnormal   184 chains / 30 workers, 10 min, ~2.5 GB  -> 7 rounds, ~1.3 h
+#   poisson       96 chains / 24 workers, 10 min, ~1.5 GB  -> 4 rounds, ~45 min
+#   dengue        88 chains / 20 workers, 60 min, ~5 GB    -> 5 rounds, ~5.5 h
+#   old_faithful  96 chains / 24 workers, 15 min, ~2.5 GB  -> 4 rounds, ~1.2 h
 # Each also runs a pilot first (a few minutes). Times requested are ~3x that.
 # ============================================================================
 
@@ -22,7 +28,15 @@ set -euo pipefail
 mkdir -p logs
 
 studies=("$@")
-if [[ ${#studies[@]} -eq 0 ]]; then studies=(skewnormal poisson dengue old_faithful); fi
+if [[ ${#studies[@]} -eq 0 ]]; then studies=(skewnormal poisson dengue old_faithful sampler_study); fi
+SAMPLER_CONFIGS="${SAMPLER_CONFIGS:-RJ + informed;RJ pool + two-anchor;Gibbs m=3 + two-anchor}"
+run_sampler_study=0
+cmp_studies=()
+for s in "${studies[@]}"; do
+  if [[ "$s" == "sampler_study" ]]; then run_sampler_study=1; else cmp_studies+=("$s"); fi
+done
+studies=("${cmp_studies[@]}")
+[[ -f results/sampler_study/tuned_moves.csv ]] || { echo "Missing results/sampler_study/tuned_moves.csv" >&2; exit 1; }
 
 declare -A NTASKS=([skewnormal]=30 [poisson]=24 [dengue]=20 [old_faithful]=24)
 declare -A MEM=([skewnormal]=90G [poisson]=48G [dengue]=110G [old_faithful]=72G)
@@ -52,10 +66,18 @@ for s in "${studies[@]}"; do
   deps+=("${id}")
 done
 
-dep_spec=$(IFS=:; echo "${deps[*]}")
-analysis=$(sbatch --parsable --export=ALL,CMP_ARGS="${CMP_ARGS:-}" --dependency=afterany:"${dep_spec}" \
-  src/slurm/08_gibbs_comparison_analysis.slurm)
-echo "Submitted analysis  : job ${analysis}  (afterany:${dep_spec})"
+if [[ ${#deps[@]} -gt 0 ]]; then
+  dep_spec=$(IFS=:; echo "${deps[*]}")
+  analysis=$(sbatch --parsable --export=ALL,CMP_ARGS="${CMP_ARGS:-}" --dependency=afterany:"${dep_spec}" \
+    src/slurm/08_gibbs_comparison_analysis.slurm)
+  echo "Submitted analysis  : job ${analysis}  (afterany:${dep_spec})"
+fi
+
+if [[ ${run_sampler_study} -eq 1 ]]; then
+  ss=$(sbatch --parsable --export=ALL,CONFIGS="${SAMPLER_CONFIGS}",CMP_ARGS="${CMP_ARGS:-}" \
+       --ntasks=32 --mem=110G --time=05:00:00 --dependency=afterok:"${setup}" src/slurm/09_sampler_study.slurm)
+  echo "Submitted sampler study confirm: job ${ss}  (32 workers, 110G, 05:00:00; ${SAMPLER_CONFIGS})"
+fi
 
 echo
 echo "Monitor: squeue -u \$USER"

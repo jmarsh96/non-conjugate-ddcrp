@@ -34,6 +34,46 @@ const SIM_SEPARATED = build_scenario(
     [-6.0, 0.0, 6.0], 1.0, [(0.0, 1.5, 5.0), (8.0, 1.5, 0.0), (16.0, 1.5, -5.0)]; x_seed=1, y_seed=3)
 const SCENARIOS = [("overlapping", SIM_OVERLAPPING), ("separated", SIM_SEPARATED)]
 
+# Sampler-study scenarios (run_sampler_study.jl), replicate `rep` ∈ 1:3. Replicate 1 of
+# overlapping and separated is the paper's data set.
+#   aba: groups A1 | B | A2 along x, A1 and A2 sharing parameters, so moving between the
+#        merged state and {A1 ∪ A2, B} needs several links to change together.
+#   k5:  n = 300 in five groups with mixed overlap.
+const STUDY_SCENARIOS = ["overlapping", "separated", "aba", "k5"]
+
+function _labels_to_c(labels)
+    first_of = Dict{Int,Int}()
+    return [get!(first_of, l, i) for (i, l) in enumerate(labels)]
+end
+
+function make_scenario(name::AbstractString, rep::Int)
+    xs, ys = 100 * rep, 100 * rep + 2
+    if name == "overlapping"
+        rep == 1 && return SIM_OVERLAPPING
+        return build_scenario([-3.0, 0.0, 3.0], 1.5, SIM_OVERLAPPING.pars; x_seed = xs, y_seed = ys)
+    elseif name == "separated"
+        rep == 1 && return SIM_SEPARATED
+        return build_scenario([-6.0, 0.0, 6.0], 1.0, SIM_SEPARATED.pars; x_seed = xs + 1, y_seed = ys + 1)
+    elseif name == "aba"
+        pars = [(0.0, 2.0, 5.0), (4.0, 2.0, -5.0), (0.0, 2.0, 5.0)]      # A1, B, A2
+        x = make_cluster_x(N_OBS, [-5.0, 0.0, 5.0], 1.0; seed = xs + 2)
+        seg = vcat([fill(k, N_OBS ÷ 3) for k in 1:3]...)
+        rng = MersenneTwister(ys + 2)
+        y = [rand(rng, SkewNormal(pars[k]...)) for k in seg]
+        c = _labels_to_c([k == 3 ? 1 : k for k in seg])
+        return (y = y, D = pairwise(Euclidean(), reshape(x, 1, :)), c = c, x = x, pars = pars)
+    elseif name == "k5"
+        n, K = 300, 5
+        pars = [(0.0, 2.0, 4.0), (4.0, 2.0, -4.0), (8.0, 2.0, 4.0), (12.0, 2.0, -4.0), (16.0, 2.0, 0.0)]
+        x = make_cluster_x(n, [-8.0, -4.0, 0.0, 4.0, 8.0], 1.2; seed = xs + 3)
+        seg = vcat([fill(k, n ÷ K) for k in 1:K]...)
+        rng = MersenneTwister(ys + 3)
+        y = [rand(rng, SkewNormal(pars[k]...)) for k in seg]
+        return (y = y, D = pairwise(Euclidean(), reshape(x, 1, :)), c = _labels_to_c(seg), x = x, pars = pars)
+    end
+    error("unknown scenario $name")
+end
+
 # Model settings
 
 const DDCRP_PARAMS = DDCRPParams(1.0, 0.5, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01)

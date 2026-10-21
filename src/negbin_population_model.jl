@@ -215,7 +215,18 @@ function table_contribution(::NegBinPopulationRates, table::AbstractVector{Int},
     return log_lik + log_prior
 end
 
+# Unconstrained scales, quick fit and fallback (coupled birth/death, informed links)
+DD.param_scales(::NegBinPopulationRates) = (ρ = :log, r = :log)
+DD.prior_mean_params(::NegBinPopulationRates, p::NegBinPopulationRatesPriors) = (ρ = ρ_prior_mean(p), r = r_prior_mean(p))
+function DD.moment_fit(::NegBinPopulationRates, S::Vector{Int}, data, ::NegBinPopulationRatesPriors)
+    est = _fit_S(S, data, 3)
+    return isnothing(est) ? nothing : (ρ = est[1], r = est[2])
+end
+
 # table_contribution factorises as Σ log f(y_i | ρ, r) + this
+DD.obs_loglik(::NegBinPopulationRates, i::Int, θ::NamedTuple, data) =
+    (μ = _exposure(data, i) * θ.ρ; μ > 0 && θ.r > 0 ? logpdf(nb_dist(μ, θ.r), observations(data)[i]) : -Inf)
+
 DD.cluster_logprior(::NegBinPopulationRates, θ::NamedTuple, priors::NegBinPopulationRatesPriors) =
     logpdf(ρ_prior(priors), θ.ρ) + logpdf(r_prior(priors), θ.r)
 

@@ -25,6 +25,9 @@ results/**
 !results/gibbs_comparison/**/*.csv
 !results/gibbs_comparison/**/*.tex
 !results/gibbs_comparison/**/*.png
+!results/sampler_study/**/*.csv
+!results/sampler_study/**/*.tex
+!results/sampler_study/**/*.png
 
 # superseded outputs no script writes any more
 results/simulation_study/skewnormal/*/table_overlapping.tex

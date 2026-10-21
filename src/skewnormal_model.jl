@@ -236,6 +236,17 @@ function table_contribution(::SkewNormalClusters, table::AbstractVector{Int},
     return log_lik + log_prior
 end
 
+# Unconstrained scales, quick fit and fallback (coupled birth/death, informed links)
+DD.param_scales(::SkewNormalClusters) = (ξ = :identity, ω = :log, α = :identity)
+DD.prior_mean_params(::SkewNormalClusters, p::SkewNormalClustersPriors) = (ξ = p.ξ_m, ω = ω_prior_mean(p), α = p.α_m)
+function DD.moment_fit(::SkewNormalClusters, S::Vector{Int}, data, ::SkewNormalClustersPriors)
+    est = _mm_est(S, data)
+    return isnothing(est) ? nothing : (ξ = est[1], ω = est[2], α = est[3])
+end
+
+DD.obs_loglik(::SkewNormalClusters, i::Int, ρ::NamedTuple, data) =
+    ρ.ω > 0 ? logpdf(SkewNormal(ρ.ξ, ρ.ω, ρ.α), observations(data)[i]) : -Inf
+
 # table_contribution factorises as Σ log f(y_i | ξ, ω, α) + this
 DD.cluster_logprior(::SkewNormalClusters, ρ::NamedTuple, priors::SkewNormalClustersPriors) =
     logpdf(Normal(priors.ξ_m, priors.ξ_s), ρ.ξ) + logpdf(InverseGamma(priors.ω_a, priors.ω_b), ρ.ω) +

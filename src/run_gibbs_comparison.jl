@@ -65,6 +65,8 @@ const N_MIN = IS_TEST ? 100 : 2_000
 const N_PILOT = IS_TEST ? 20 : 300
 const BURN_FRAC = 0.1
 const MAX_STORED = IS_TEST ? 1_000 : 25_000
+# Row of results/sampler_study/tuned_moves.csv: the basic move (the data-informed pilot costs ~8x a sweep)
+const TWO_ANCHOR_KIND = "two_anchor"
 @everywhere const PK_MAX = 30
 
 # Old Faithful σ tuning, as in run_skewnormal.jl
@@ -159,6 +161,7 @@ end
 linkname(::UniformLink) = "uniform"
 linkname(::PriorLink) = "prior"
 linkname(::MetropolisedPriorLink) = "metropolised"
+linkname(::InformedLink) = "informed"
 
 function sampler_configs(spec)
     cfgs = NamedTuple[]
@@ -189,7 +192,28 @@ function sampler_configs(spec)
                      link = "exact", fdim = "none", model = spec.model, priors = spec.priors,
                      proposal = AuxiliaryGibbs(qp, m), fdim_prop = NoUpdate(), link_prop = UniformLink()))
     end
+    # New moves of the sampler study (docs/sampler_improvements.md), each beside its base config
+    ta = two_anchor_tuned()
+    push!(cfgs, (label = "RJ q:mm link:informed", sampler = "new_rj", q = "mm", m = 0, link = "informed",
+                 fdim = "none", model = spec.model, priors = spec.priors, proposal = spec.q_mm,
+                 fdim_prop = NoUpdate(), link_prop = InformedLink(0.1, 1.0), base = "RJ q:mm link:prior"))
+    push!(cfgs, (label = "RJ pool q:mm link:prior m=1 + two-anchor", sampler = "new_aux_mh", q = "mm", m = 1,
+                 link = "prior", fdim = "none", model = spec.model, priors = spec.priors,
+                 proposal = AuxiliaryMH(spec.q_mm, 1), fdim_prop = NoUpdate(), link_prop = PriorLink(),
+                 two_anchor = ta, base = "RJ pool q:mm link:prior m=1"))
+    push!(cfgs, (label = "Gibbs q:mm m=3 + two-anchor", sampler = "new_aux_gibbs", q = "mm", m = 3,
+                 link = "exact", fdim = "none", model = spec.model, priors = spec.priors,
+                 proposal = AuxiliaryGibbs(spec.q_mm, 3), fdim_prop = NoUpdate(), link_prop = UniformLink(),
+                 two_anchor = ta, base = "Gibbs q:mm m=3"))
     return cfgs
+end
+
+# Two-anchor settings tuned on the skew-normal simulations (run_sampler_study.jl --stage tune)
+function two_anchor_tuned()
+    t = CSV.read(joinpath(RESULTS, "sampler_study", "tuned_moves.csv"), DataFrame)
+    r = t[t.kind .== TWO_ANCHOR_KIND, :][1, :]
+    TWO_ANCHOR_KIND == "pilot" || return TwoAnchor(k = r.scale, attempts = Int(r.attempts))
+    return TwoAnchor(k = r.scale, attempts = Int(r.attempts), pilot = true, tilt = r.tilt, p_cross = r.p_cross)
 end
 
 function make_run(c, sc, start; n_samples, burn, thin, save_chain = true)
@@ -223,7 +247,7 @@ end
             n_samples = n_samples, verbose = false, track_diagnostics = true,
             infer_params = Dict{Symbol,Bool}(:α_ddcrp => true, :s_ddcrp => false),
             prop_sds = merge(Dict(:s_ddcrp => 0.3), cfg.prop_sds),
-            link_proposal = cfg.link_prop,
+            link_proposal = cfg.link_prop, two_anchor = get(cfg, :two_anchor, nothing),
         )
         Random.seed!(cfg.start_seed)
         init_c = start_links(cfg.start, cfg.D, cfg.ddcrp)
@@ -280,6 +304,7 @@ end
             α_post = mean(post.α_ddcrp),
             mean_ari = ari,
             acc_birth = acc.birth, acc_death = acc.death, acc_fixed = acc.fixed, acc_overall = acc.overall,
+            ta_accepts = diag.two_anchor.split_accepts + diag.two_anchor.merge_accepts,
             chain_file = basename(cfg.chain_file),
         ), pk)
     end
@@ -323,12 +348,15 @@ const PILOT_FILE = joinpath(OUTDIR, "pilot_timing.csv")
 println("Study $(STUDY): $(length(CONFIGS)) samplers × $(length(SPEC.scenarios)) scenario(s) × $(length(STARTS)) starts")
 println("  q_mm = $(SPEC.q_mm_name)")
 
-if FORCE_PILOT || tuned_now || !isfile(PILOT_FILE)
-    pcfgs = [make_run(c, sc, :prior_a; n_samples = N_PILOT, burn = 0, thin = 1, save_chain = false)
-             for c in CONFIGS for sc in SPEC.scenarios]
+# A pilot of every config, or of the configs missing from an existing pilot_timing.csv
+old_pilot = FORCE_PILOT || tuned_now || !isfile(PILOT_FILE) ? nothing : CSV.read(PILOT_FILE, DataFrame)
+timed = isnothing(old_pilot) ? Set{Tuple{String,String}}() : Set(zip(old_pilot.label, old_pilot.scenario))
+pcfgs = [make_run(c, sc, :prior_a; n_samples = N_PILOT, burn = 0, thin = 1, save_chain = false)
+         for c in CONFIGS for sc in SPEC.scenarios if !((c.label, sc.name) in timed)]
+if !isempty(pcfgs)
     println("Pilot: $(length(pcfgs)) runs of $(N_PILOT) iterations")
     pilot = DataFrame(pmap(pilot_time, pcfgs))
-    CSV.write(PILOT_FILE, pilot)
+    CSV.write(PILOT_FILE, isnothing(old_pilot) ? pilot : vcat(old_pilot, pilot; cols = :union))
 end
 const PILOT = CSV.read(PILOT_FILE, DataFrame)
 

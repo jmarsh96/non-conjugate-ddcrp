@@ -72,6 +72,26 @@ julia --project=. src/run_gibbs_comparison.jl --study old_faithful
 julia --project=. src/analyse_gibbs_comparison.jl
 ```
 
+The birth/death bottleneck study. `diagnose_births.jl` compares the acceptance of the births the
+sampler proposes with the best any parameter proposal could achieve. `run_sampler_study.jl`
+tests three moves (a coupled-parameter birth/death, a posterior-informed link proposal and a
+two-anchor multi-link split/merge) on simulated skew-normal data, against reversible jump and
+auxiliary Gibbs. Run the stages in order; `screen` takes about 2 hours on 12 workers and
+`confirm` needs a cluster. On a machine with uneven cores (a laptop with performance and
+efficiency cores), run `--stage cost` on one pinned core first and pass `--clean`: chain
+lengths and the reported ESS per second then come from that clean cost per sweep.
+
+```bash
+julia --project=. src/diagnose_births.jl
+julia --project=. src/run_sampler_study.jl --stage tune
+taskset -c 2 julia --project=. src/run_sampler_study.jl --stage cost --workers 1
+julia --project=. src/run_sampler_study.jl --stage screen [--clean] [--configs "a;b"]
+julia --project=. src/run_sampler_study.jl --stage poisson
+julia --project=. src/run_sampler_study.jl --stage confirm [--configs "a;b"]
+julia --project=. src/analyse_sampler_study.jl --stage {screen|poisson|confirm}
+julia --project=. src/geweke_skewnormal.jl --moves
+```
+
 The run scripts use 8 local worker processes unless told otherwise, and `--slurm` makes them
 use a Slurm allocation instead. Seeds are set inside the scripts.
 
@@ -103,6 +123,7 @@ themselves are not included as they come to tens of gigabytes; the run scripts r
 - `results/simulation_study/poisson/`
 - `results/old_faithful/`
 - `results/gibbs_comparison/` (`gibbs_comparison_numbers.tex` lists the numbers for the text)
+- `results/sampler_study/` (birth diagnostic, and one folder per stage of the sampler study)
 
 The paper lives in its own repo. If it is cloned into `docs/ddcrp-paper/`, the analyse scripts
 will also copy the figures and tables into it.
