@@ -330,8 +330,10 @@ STAGE == "tune" && (run_tune(); exit())
 
 # Screen, confirm and Poisson stages
 
-isfile(TUNED_FILE) || error("no $TUNED_FILE; run --stage tune first")
-const TUNED = CSV.read(TUNED_FILE, DataFrame)
+# --test falls back to the full study's tuned settings when its own tune stage has not run
+const TUNED_READ = !isfile(TUNED_FILE) && IS_TEST ? joinpath(RESULTS, "sampler_study", "tuned_moves.csv") : TUNED_FILE
+isfile(TUNED_READ) || error("no $TUNED_READ; run --stage tune first")
+const TUNED = CSV.read(TUNED_READ, DataFrame)
 const Q = STAGE == "poisson" ? poisson_q() : skew_q()
 CONFIGS = study_configs(Q, TUNED; collapsed = STAGE == "poisson")
 # --configs: confirm keeps the three baselines too; screen and cost run only these and merge their rows
