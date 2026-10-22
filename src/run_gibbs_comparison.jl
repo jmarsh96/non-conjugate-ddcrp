@@ -3,9 +3,11 @@
 # RJ runs as published and as the Metropolised Algorithm 8 (`AuxiliaryMH`, "RJ pool").
 #
 # Old Faithful first tunes its LNMM birth σ by ESJD(K), like the other studies (--tune reruns it).
+# --configs "a;b" runs only the configs whose labels start with a or b (re-piloted under --pilot)
+# and replaces their rows in chains_<study>.csv.
 #
 #   julia --project=. src/run_gibbs_comparison.jl --study {skewnormal|poisson|dengue|old_faithful}
-#         [--pilot] [--tune] [--test] [--slurm] [--workers N]
+#         [--configs "a;b"] [--pilot] [--tune] [--test] [--slurm] [--workers N]
 
 using CSV, DataFrames, Distances, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -21,6 +23,7 @@ const USE_SLURM = "--slurm" in ARGS
 const IS_TEST = "--test" in ARGS
 const FORCE_PILOT = "--pilot" in ARGS
 const FORCE_TUNE = "--tune" in ARGS
+const CONFIG_PREFIXES = filter(!isempty, strip.(split(arg_value("--configs", ""), ";")))
 
 if USE_SLURM
     using SlurmClusterManager
@@ -52,7 +55,10 @@ end
 # Settings
 
 const M_POOL = [1, 3, 10, 30]
-const M_POOL_MH = [1, 3, 10]
+const M_POOL_MH = [1, 3, 10, 30]
+# Gibbs scores the moving set only under blocks within this log link weight of the largest (the
+# rest by an exact MH move): dengue's hop window puts every block outside it at log weight -30
+const GIBBS_SKIP = get(Dict("dengue" => 10.0), STUDY, Inf)
 const STARTS = [:singletons, :one_cluster, :prior_a, :prior_b]
 const START_SEEDS = Dict(:singletons => 1001, :one_cluster => 1002, :prior_a => 1003, :prior_b => 1004)
 
@@ -190,7 +196,8 @@ function sampler_configs(spec)
         qp = q === :mm ? spec.q_mm : spec.q_prior
         push!(cfgs, (label = "Gibbs q:$(q) m=$(m)", sampler = "aux_gibbs", q = String(q), m = m,
                      link = "exact", fdim = "none", model = spec.model, priors = spec.priors,
-                     proposal = AuxiliaryGibbs(qp, m), fdim_prop = NoUpdate(), link_prop = UniformLink()))
+                     proposal = AuxiliaryGibbs(qp, m; skip = GIBBS_SKIP), fdim_prop = NoUpdate(),
+                     link_prop = UniformLink()))
     end
     # New moves of the sampler study (docs/sampler_improvements.md), each beside its base config
     ta = two_anchor_tuned()
@@ -203,7 +210,8 @@ function sampler_configs(spec)
                  two_anchor = ta, base = "RJ pool q:mm link:prior m=1"))
     push!(cfgs, (label = "Gibbs q:mm m=3 + two-anchor", sampler = "new_aux_gibbs", q = "mm", m = 3,
                  link = "exact", fdim = "none", model = spec.model, priors = spec.priors,
-                 proposal = AuxiliaryGibbs(spec.q_mm, 3), fdim_prop = NoUpdate(), link_prop = UniformLink(),
+                 proposal = AuxiliaryGibbs(spec.q_mm, 3; skip = GIBBS_SKIP), fdim_prop = NoUpdate(),
+                 link_prop = UniformLink(),
                  two_anchor = ta, base = "Gibbs q:mm m=3"))
     return cfgs
 end
@@ -305,6 +313,7 @@ end
             mean_ari = ari,
             acc_birth = acc.birth, acc_death = acc.death, acc_fixed = acc.fixed, acc_overall = acc.overall,
             ta_accepts = diag.two_anchor.split_accepts + diag.two_anchor.merge_accepts,
+            gibbs_skip = cfg.proposal isa AuxiliaryGibbs ? cfg.proposal.skip : NaN,
             chain_file = basename(cfg.chain_file),
         ), pk)
     end
@@ -342,14 +351,19 @@ const SPEC = study_spec(STUDY)
 
 # Pilot
 
-const CONFIGS = sampler_configs(SPEC)
+selected(label) = isempty(CONFIG_PREFIXES) || any(p -> startswith(label, p), CONFIG_PREFIXES)
+const CONFIGS = filter(c -> selected(c.label), sampler_configs(SPEC))
+isempty(CONFIGS) && error("--configs matches no config")
 const PILOT_FILE = joinpath(OUTDIR, "pilot_timing.csv")
 
 println("Study $(STUDY): $(length(CONFIGS)) samplers × $(length(SPEC.scenarios)) scenario(s) × $(length(STARTS)) starts")
 println("  q_mm = $(SPEC.q_mm_name)")
 
 # A pilot of every config, or of the configs missing from an existing pilot_timing.csv
-old_pilot = FORCE_PILOT || tuned_now || !isfile(PILOT_FILE) ? nothing : CSV.read(PILOT_FILE, DataFrame)
+# (--pilot with --configs re-pilots only the selected ones)
+old_pilot = (FORCE_PILOT && isempty(CONFIG_PREFIXES)) || tuned_now || !isfile(PILOT_FILE) ? nothing :
+    CSV.read(PILOT_FILE, DataFrame)
+FORCE_PILOT && !isnothing(old_pilot) && (old_pilot = filter(r -> !selected(r.label), old_pilot))
 timed = isnothing(old_pilot) ? Set{Tuple{String,String}}() : Set(zip(old_pilot.label, old_pilot.scenario))
 pcfgs = [make_run(c, sc, :prior_a; n_samples = N_PILOT, burn = 0, thin = 1, save_chain = false)
          for c in CONFIGS for sc in SPEC.scenarios if !((c.label, sc.name) in timed)]
@@ -382,7 +396,14 @@ rows = pmap(run_and_save, runs)
 df = DataFrame(rows)
 df.study .= STUDY
 df.q_mm_name .= SPEC.q_mm_name
-CSV.write(joinpath(OUTDIR, "chains_$(STUDY).csv"), df)
+CHAINS_FILE = joinpath(OUTDIR, "chains_$(STUDY).csv")
+if !isempty(CONFIG_PREFIXES) && isfile(CHAINS_FILE)
+    old = filter(r -> !(r.label in Set(df.label)), CSV.read(CHAINS_FILE, DataFrame))
+    df_out = vcat(old, df; cols = :union)
+else
+    df_out = df
+end
+CSV.write(CHAINS_FILE, df_out)
 
 @printf("\n%-28s %-12s %10s %10s %10s %8s\n", "sampler", "scenario", "ESS(K)", "ESS(K)/s", "s/1k it", "mean K")
 for g in groupby(df, [:label, :scenario]; sort = false)

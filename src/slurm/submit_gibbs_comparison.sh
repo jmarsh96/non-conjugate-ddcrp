@@ -17,10 +17,10 @@
 #
 # Existing pilot_timing.csv files are kept; configs missing from them (the new moves) are piloted.
 # Sizing (chains / workers, wall-clock per chain, memory per worker at the N_MAX cap):
-#   skewnormal   184 chains / 30 workers, 10 min, ~2.5 GB  -> 7 rounds, ~1.3 h
-#   poisson       96 chains / 24 workers, 10 min, ~1.5 GB  -> 4 rounds, ~45 min
-#   dengue        88 chains / 20 workers, 60 min, ~5 GB    -> 5 rounds, ~5.5 h
-#   old_faithful  96 chains / 24 workers, 15 min, ~2.5 GB  -> 4 rounds, ~1.2 h
+#   skewnormal   208 chains / 30 workers, 10 min, ~2.5 GB  -> 7 rounds, ~1.3 h
+#   poisson      108 chains / 24 workers, 10 min, ~1.5 GB  -> 5 rounds, ~55 min
+#   dengue       100 chains / 20 workers, 60 min, ~5 GB    -> 5 rounds, ~5.5 h
+#   old_faithful 108 chains / 24 workers, 15 min, ~2.5 GB  -> 5 rounds, ~1.4 h
 # Each also runs a pilot first (a few minutes). Times requested are ~3x that.
 # ============================================================================
 
