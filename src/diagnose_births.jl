@@ -40,7 +40,7 @@ function skew_setup(scen)
     t = CSV.read(joinpath(RESULTS, "simulation_study", "skewnormal", "tuned_sigma.csv"), DataFrame)
     σ = NamedTuple{(:ξ, :ω, :α)}(Tuple(t.σ[findfirst(==(p), t.param)] for p in ("ξ", "ω", "α")))
     σ2 = map(x -> 2x, σ)
-    sim = SN.make_scenario(scen, 1)
+    sim = SN.make_scenario(scen)
     return (study = "skewnormal", scenario = scen, model = SN.SkewNormalClusters(),
             data = ContinuousData(sim.y, sim.D), ddcrp = SN.DDCRP_PARAMS, priors = SN.PRIORS,
             q = SN.make_birth(:nmm, :lnmm, :nmm, σ),
@@ -81,9 +81,9 @@ end
     # log m(y_M): quadrature for one parameter, defensive importance sampling otherwise
     function log_marginal(setup, M, st, rng_seed)
         model, data, priors = setup.model, setup.data, setup.priors
-        if length(param_scales(model)) == 1
+        if model isa GammaClusterShapeMarg   # one shape parameter: quadrature on log γ
             ts = range(-12, 12; length = 4001)
-            f = [contribution_with(model, M, DD.from_t(model, [t]), st, data, priors) + DD.logjac(model, [t]) for t in ts]
+            f = [contribution_with(model, M, (α = exp(t),), st, data, priors) + t for t in ts]
             v = _lse(f) + log(step(ts))
             return v, v, Float64(length(ts))
         end

@@ -2,10 +2,9 @@
 # (LIKELIHOOD_ON[] = false) the target is the prior. P(K) is compared with 200k draws of the
 # ddCRP prior, and each parameter's prior PIT with Uniform(0, 1), as z-scores using the chain's ESS.
 # Run after run_skewnormal.jl. --rerun repeats the Resample configs with first-pass |z| > 2
-# at 4x length from two further seeds. --moves checks the sampler-study moves instead (coupled
-# birth/death, informed links, two-anchor split/merge), with their data-informed proposals.
+# at 4x length from two further seeds.
 #
-#   julia --project=. src/geweke_skewnormal.jl [--test] [--slurm] [--rerun | --moves]
+#   julia --project=. src/geweke_skewnormal.jl [--test] [--slurm] [--rerun]
 
 using DistanceDependentCRP, CSV, DataFrames, Statistics, StatsBase, Random, JLD2, Printf, Distributions
 using Distributed
@@ -13,7 +12,6 @@ using Distributed
 const USE_SLURM = "--slurm" in ARGS
 const IS_TEST = "--test" in ARGS
 const RERUN = "--rerun" in ARGS
-const MOVES = "--moves" in ARGS
 
 if USE_SLURM
     using SlurmClusterManager
@@ -60,34 +58,15 @@ println("Birth σ from tuning: $SIGMA_BIRTH")
     error("unknown family $fam")
 end
 
-# Sampler-study moves on the baseline birth proposal (scales as in run_sampler_study.jl's grid centre)
-@everywhere function move_spec(move, q)
-    cp = Coupled(FitStudentT(4.0, 1.0), 0.5)
-    move == "RJ + coupled FitT" && return (CoupledRJ(q, cp), PriorLink(), nothing)
-    move == "RJ pool" && return (AuxiliaryMH(q, 1), PriorLink(), nothing)
-    move == "RJ pool + coupled FitT" && return (AuxiliaryMH(q, 1; coupled = cp), PriorLink(), nothing)
-    move == "RJ pool + coupled ZeroT" && return (AuxiliaryMH(q, 1; coupled = Coupled(ZeroStudentT(4.0, 1.0), 0.5)), PriorLink(), nothing)
-    move == "RJ pool + coupled FitN" && return (AuxiliaryMH(q, 1; coupled = Coupled(FitNormal(1.0), 0.5)), PriorLink(), nothing)
-    move == "RJ + informed" && return (q, InformedLink(0.1, 1.0), nothing)
-    move == "RJ pool + informed" && return (AuxiliaryMH(q, 1), InformedLink(0.1, 1.0), nothing)
-    move == "RJ + two-anchor" && return (q, PriorLink(), TwoAnchor(k = 3.0, attempts = 5))
-    move == "RJ pool + two-anchor" && return (AuxiliaryMH(q, 1), PriorLink(), TwoAnchor(k = 3.0, attempts = 5))
-    move == "Gibbs m=3 + two-anchor" && return (AuxiliaryGibbs(q, 3), UniformLink(), TwoAnchor(k = 3.0, attempts = 5))
-    error("unknown move $move")
-end
-
 @everywhere function run_prior_chain(cfg)
     Random.seed!(cfg.seed)
     σ = cfg.σ_birth
     birth = MixedProposal((ξ = _birth_family(cfg.fam[1], σ.ξ), ω = _birth_family(cfg.fam[2], σ.ω),
                            α = _birth_family(cfg.fam[3], σ.α)))
-    link, ta = UniformLink(), nothing
-    cfg.move == "" || ((birth, link, ta) = move_spec(cfg.move, birth))
     opts = MCMCOptions(
         n_samples = cfg.n_samples, verbose = false, track_diagnostics = true,
         infer_params = Dict{Symbol,Bool}(:α_ddcrp => false, :s_ddcrp => false),
         prop_sds = Dict{Symbol,Float64}(:ξ => PROP_SDS.ξ, :ω => PROP_SDS.ω, :α => PROP_SDS.α),
-        link_proposal = link, two_anchor = ta,
     )
     fdim = cfg.resample ? MixedFixedDim((
         ξ = Resample(_birth_family(cfg.fam[1], cfg.σ_resample)),
@@ -117,14 +96,10 @@ ddcrp_params = DDCRPParams(ALPHA_DDCRP, S_DECAY, DistanceDependentCRP.exp_decay,
 # The Resample configurations with a first-pass |z| > 2, and the seeds of their reruns.
 const RERUN_SPECS = [(:nmm, :lnmm, :nmm), (:prior, :lnmm, :nmm), (:nmm, :nmm, :nmm)]
 const RERUN_SEEDS = [101, 202]
-const MOVE_LIST = ["RJ pool", "RJ + coupled FitT", "RJ pool + coupled FitT", "RJ pool + coupled ZeroT",
-                   "RJ pool + coupled FitN", "RJ + informed", "RJ pool + informed", "RJ + two-anchor",
-                   "RJ pool + two-anchor", "Gibbs m=3 + two-anchor"]
-_cfg(f, rs, seed; move = "") = (fam = f, resample = rs, σ_birth = SIGMA_BIRTH, σ_resample = SIGMA_RESAMPLE,
+_cfg(f, rs, seed) = (fam = f, resample = rs, σ_birth = SIGMA_BIRTH, σ_resample = SIGMA_RESAMPLE,
                      priors = PRIORS_G, y = sim.y, D = sim.D, ddcrp_params = ddcrp_params,
-                     n_samples = N_SAMPLES, burn = BURN, thin = THIN, seed = seed, move = move)
+                     n_samples = N_SAMPLES, burn = BURN, thin = THIN, seed = seed)
 configs = RERUN ? [_cfg(f, true, sd) for f in RERUN_SPECS for sd in RERUN_SEEDS] :
-          MOVES ? [_cfg((:nmm, :lnmm, :nmm), false, sd; move = m) for m in MOVE_LIST for sd in (42, 43)] :
                   [_cfg(f, rs, 42) for f in BIRTH_SPECS for rs in (false, true)]
 
 println("Running $(length(configs)) prior-only chains of $(N_SAMPLES) iterations...")
@@ -146,7 +121,7 @@ for (cfg, r) in zip(configs, results)
           sqrt(var(k_ref) / max(effective_sample_size(r.k), 10.0) + var(k_ref) / N_REF)
     pit(p) = cdf.(getproperty(prior_cdf, p), getproperty(r, p))
     push!(rows, (
-        birth = cfg.move == "" ? join(String.(cfg.fam), "/") : cfg.move, fdim = cfg.resample ? "resample" : "none",
+        birth = join(String.(cfg.fam), "/"), fdim = cfg.resample ? "resample" : "none",
         seed = cfg.seed,
         mean_K = mean(r.k), mean_K_ref = mean(k_ref),
         tv_K = 0.5 * sum(abs.(p_chain .- p_ref)),
@@ -159,7 +134,7 @@ for (cfg, r) in zip(configs, results)
 end
 df = DataFrame(rows)
 df.max_abs_z = [maximum(abs, (r.z_K, r.z_ξ, r.z_ω, r.z_α)) for r in eachrow(df)]
-const SUFFIX = RERUN ? "_rerun" : MOVES ? "_moves" : ""
+const SUFFIX = RERUN ? "_rerun" : ""
 CSV.write(joinpath(OUTDIR, "summary_geweke$(SUFFIX).csv"), df)
 
 println()
@@ -171,7 +146,7 @@ for r in eachrow(df)
 end
 @printf("Reference E[K] = %.3f\n", mean(k_ref))
 
-if !RERUN && !MOVES
+if !RERUN
     open(joinpath(OUTDIR, "geweke_reference.txt"), "w") do io
         @printf(io, "reference_mean_K %.4f\nn_ref %d\nn_samples %d\n", mean(k_ref), N_REF, N_SAMPLES)
     end

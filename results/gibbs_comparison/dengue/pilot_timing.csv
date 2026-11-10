@@ -1,11 +1,23 @@
 label,scenario,n_pilot,sec_per_iter
-RJ q:mm link:prior,parana_2024,300,0.009776020730000001
-RJ q:prior link:prior,parana_2024,300,0.00975005932
-Gibbs q:mm m=1,parana_2024,300,0.051660824103333336
-Gibbs q:mm m=3,parana_2024,300,0.05327900989
-Gibbs q:mm m=10,parana_2024,300,0.05601101882333333
-Gibbs q:mm m=30,parana_2024,300,0.06589974440333334
-Gibbs q:prior m=1,parana_2024,300,0.05077426449
-Gibbs q:prior m=3,parana_2024,300,0.05243319352333333
-Gibbs q:prior m=10,parana_2024,300,0.05631428228333333
-Gibbs q:prior m=30,parana_2024,300,0.06460399225666666
+RJ q:mm link:prior,parana_2024,300,0.005647956503333333
+RJ q:prior link:prior,parana_2024,300,0.005519740603333333
+RJ pool q:mm link:prior m=1,parana_2024,300,0.0021274995
+RJ pool q:mm link:prior m=3,parana_2024,300,0.0025202836133333332
+RJ pool q:mm link:prior m=10,parana_2024,300,0.00389085906
+RJ pool q:mm link:prior m=30,parana_2024,300,0.0074528029666666665
+RJ pool q:mm link:metropolised m=1,parana_2024,300,0.0033451737066666665
+RJ pool q:mm link:metropolised m=3,parana_2024,300,0.004102680423333334
+RJ pool q:mm link:metropolised m=10,parana_2024,300,0.006593622546666666
+RJ pool q:mm link:metropolised m=30,parana_2024,300,0.013309392813333334
+RJ pool q:prior link:metropolised m=1,parana_2024,300,0.00333000314
+RJ pool q:prior link:metropolised m=3,parana_2024,300,0.00396161124
+RJ pool q:prior link:metropolised m=10,parana_2024,300,0.0061078208833333335
+RJ pool q:prior link:metropolised m=30,parana_2024,300,0.013597799736666666
+Gibbs q:mm m=1,parana_2024,300,0.008356259646666668
+Gibbs q:mm m=3,parana_2024,300,0.00860548987
+Gibbs q:mm m=10,parana_2024,300,0.0131194378
+Gibbs q:mm m=30,parana_2024,300,0.025724398016666664
+Gibbs q:prior m=1,parana_2024,300,0.008817460656666666
+Gibbs q:prior m=3,parana_2024,300,0.009092851956666667
+Gibbs q:prior m=10,parana_2024,300,0.012247312073333334
+Gibbs q:prior m=30,parana_2024,300,0.023450025433333334

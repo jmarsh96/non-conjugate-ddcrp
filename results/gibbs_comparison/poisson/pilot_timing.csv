@@ -1,13 +1,25 @@
 label,scenario,n_pilot,sec_per_iter
-Collapsed Gibbs,overlapping,300,0.00229254644
-RJ q:mm link:uniform,overlapping,300,0.0014606767766666667
-RJ q:mm link:prior,overlapping,300,0.00142785454
-RJ q:prior link:uniform,overlapping,300,0.0015212664633333334
-Gibbs q:mm m=1,overlapping,300,0.002611912456666667
-Gibbs q:mm m=3,overlapping,300,0.00277437548
-Gibbs q:mm m=10,overlapping,300,0.0032262509933333335
-Gibbs q:mm m=30,overlapping,300,0.00450405247
-Gibbs q:prior m=1,overlapping,300,0.0026039291133333337
-Gibbs q:prior m=3,overlapping,300,0.00292882388
-Gibbs q:prior m=10,overlapping,300,0.0037001271233333337
-Gibbs q:prior m=30,overlapping,300,0.0059841968333333335
+Collapsed Gibbs,overlapping,300,0.0025428907233333337
+RJ q:mm link:uniform,overlapping,300,0.0014213321033333334
+RJ q:mm link:prior,overlapping,300,0.00115517838
+RJ q:prior link:uniform,overlapping,300,0.00131339607
+RJ pool q:mm link:prior m=1,overlapping,300,0.0006397516766666666
+RJ pool q:mm link:prior m=3,overlapping,300,0.00068738814
+RJ pool q:mm link:prior m=10,overlapping,300,0.0009271640733333333
+RJ pool q:mm link:prior m=30,overlapping,300,0.0013638289433333334
+RJ pool q:mm link:metropolised m=1,overlapping,300,0.0008964507866666667
+RJ pool q:mm link:metropolised m=3,overlapping,300,0.0010049700666666668
+RJ pool q:mm link:metropolised m=10,overlapping,300,0.0013610072933333333
+RJ pool q:mm link:metropolised m=30,overlapping,300,0.002563699553333333
+RJ pool q:prior link:metropolised m=1,overlapping,300,0.0009530965333333334
+RJ pool q:prior link:metropolised m=3,overlapping,300,0.0010774589133333333
+RJ pool q:prior link:metropolised m=10,overlapping,300,0.00150726478
+RJ pool q:prior link:metropolised m=30,overlapping,300,0.002657942203333333
+Gibbs q:mm m=1,overlapping,300,0.0013327322266666667
+Gibbs q:mm m=3,overlapping,300,0.0014270019633333332
+Gibbs q:mm m=10,overlapping,300,0.0022159318333333333
+Gibbs q:mm m=30,overlapping,300,0.00404447466
+Gibbs q:prior m=1,overlapping,300,0.0014005682366666666
+Gibbs q:prior m=3,overlapping,300,0.0016269754933333333
+Gibbs q:prior m=10,overlapping,300,0.0027463655766666664
+Gibbs q:prior m=30,overlapping,300,0.00573213892

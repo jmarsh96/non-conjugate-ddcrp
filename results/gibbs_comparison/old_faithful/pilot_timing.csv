@@ -1,13 +1,25 @@
 label,scenario,n_pilot,sec_per_iter
-RJ q:prior link:uniform + Resample,faithful,300,0.0037480767433333336
-RJ q:prior link:uniform,faithful,300,0.003587454523333333
-RJ q:mm link:uniform,faithful,300,0.00365937012
-RJ q:mm link:prior,faithful,300,0.0031950406066666667
-Gibbs q:mm m=1,faithful,300,0.006142328896666667
-Gibbs q:mm m=3,faithful,300,0.0062938863033333335
-Gibbs q:mm m=10,faithful,300,0.0071684277466666675
-Gibbs q:mm m=30,faithful,300,0.009726874216666667
-Gibbs q:prior m=1,faithful,300,0.006016696076666667
-Gibbs q:prior m=3,faithful,300,0.0062865782166666665
-Gibbs q:prior m=10,faithful,300,0.008181703333333333
-Gibbs q:prior m=30,faithful,300,0.01056382536
+RJ q:prior link:uniform + Resample,faithful,300,0.0037796831433333337
+RJ q:prior link:uniform,faithful,300,0.003505310046666667
+RJ q:mm link:uniform,faithful,300,0.003340765243333333
+RJ q:mm link:prior,faithful,300,0.0023658122133333333
+RJ pool q:mm link:prior m=1,faithful,300,0.003157217683333333
+RJ pool q:mm link:prior m=3,faithful,300,0.00274331617
+RJ pool q:mm link:prior m=10,faithful,300,0.0030697762366666665
+RJ pool q:mm link:prior m=30,faithful,300,0.0033414308099999996
+RJ pool q:mm link:metropolised m=1,faithful,300,0.00515826355
+RJ pool q:mm link:metropolised m=3,faithful,300,0.005099503280000001
+RJ pool q:mm link:metropolised m=10,faithful,300,0.0059002918
+RJ pool q:mm link:metropolised m=30,faithful,300,0.007881316056666667
+RJ pool q:prior link:metropolised m=1,faithful,300,0.00515676754
+RJ pool q:prior link:metropolised m=3,faithful,300,0.0052003019800000005
+RJ pool q:prior link:metropolised m=10,faithful,300,0.0061692274666666665
+RJ pool q:prior link:metropolised m=30,faithful,300,0.007750089053333333
+Gibbs q:mm m=1,faithful,300,0.00625634691
+Gibbs q:mm m=3,faithful,300,0.006080370183333333
+Gibbs q:mm m=10,faithful,300,0.007175826410000001
+Gibbs q:mm m=30,faithful,300,0.008550686283333334
+Gibbs q:prior m=1,faithful,300,0.006148987470000001
+Gibbs q:prior m=3,faithful,300,0.006248248763333334
+Gibbs q:prior m=10,faithful,300,0.007833878423333333
+Gibbs q:prior m=30,faithful,300,0.009827805803333334

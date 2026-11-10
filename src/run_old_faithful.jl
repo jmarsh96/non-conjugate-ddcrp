@@ -1,4 +1,5 @@
-# Old Faithful eruption data under the marginalised Gamma model (GammaClusterShapeMarg).
+# Old Faithful eruption data under the marginalised Gamma model (GammaClusterShapeMarg),
+# sampled by RJ pool with the configuration that was most efficient in the sampler comparison.
 #
 #   julia --project=. src/run_old_faithful.jl [--test]
 
@@ -15,8 +16,10 @@ mkpath(OUTDIR)
 
 include(joinpath(@__DIR__, "old_faithful_common.jl"))
 
-const BIRTH_PROP = InverseGammaMomentMatch()
-const FIXED_PROP = Resample(InverseGammaMomentMatch())
+# RJ pool, m = 10, LNMM birth with σ tuned by ESJD(K) (run_gibbs_comparison.jl --tune), prior links
+const POOL_M = 10
+const BIRTH_SIGMA = CSV.read(joinpath(@__DIR__, "..", "results", "old_faithful", "tuned_sigma.csv"), DataFrame).σ[1]
+const BIRTH_PROP = AuxiliaryMH(LogNormalMomentMatch(BIRTH_SIGMA), POOL_M)
 
 const OPTS = MCMCOptions(
     n_samples = N_SAMPLES,
@@ -28,6 +31,7 @@ const OPTS = MCMCOptions(
         :s_ddcrp => false
     ),
     prop_sds = Dict(:α => PROP_SD_SHAPE, :s_ddcrp => 0.3),
+    link_proposal = PriorLink(),
     track_diagnostics = true
 )
 
@@ -44,13 +48,14 @@ println("  Waiting time:      [$(minimum(w)), $(maximum(w))] min")
 
 # run inference
 
-println("\nRunning RJMCMC (n=$n, $N_SAMPLES iterations, $BURNIN burn-in)...")
+println("\nRunning RJ pool, m=$POOL_M (n=$n, $N_SAMPLES iterations, $BURNIN burn-in)...")
 Random.seed!(1)
 total_time = @elapsed begin
     samples, diagnostics = mcmc(
         MODEL, ContinuousData(y, D), DDCRP_PARAMS, PRIORS,
         BIRTH_PROP;
-        fixed_dim_proposal = FIXED_PROP,
+        fixed_dim_proposal = NoUpdate(),
+        init_proposal = LogNormalMomentMatch(BIRTH_SIGMA),
         opts = OPTS
     )
 end
