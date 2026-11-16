@@ -28,6 +28,8 @@ results/**
 !results/sampler_study/**/*.csv
 !results/sampler_study/**/*.tex
 !results/sampler_study/**/*.png
+!results/scaling/**/*.csv
+!results/scaling/**/*.tex
 
 # superseded outputs no script writes any more
 results/simulation_study/skewnormal/*/table_overlapping.tex

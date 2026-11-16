@@ -4,12 +4,12 @@
 \toprule
  & \multicolumn{4}{c}{Reversible jump (best)} & \multicolumn{4}{c}{Auxiliary Gibbs (best)} & \\
 \cmidrule(lr){2-5}\cmidrule(lr){6-9}
-Study & Config & s/1k & ESS$(K)$/s & co-cl./s & Config & s/1k & ESS$(K)$/s & co-cl./s & Gibbs/RJ \\
+Study & Config & s/1k & ESS$(K)$/s & co-cl./s & Config & s/1k & ESS$(K)$/s & co-cl./s & Aux. Gibbs/RJ \\
 \midrule
-Skew-normal, overlapping & RJ pool, MM, ML, $m{=}1$ & 1.14 & 2.25 & 8.91 & Gibbs, MM, $m{=}1$ & 1.57 & 2.77 & 9.35 & 1.23 \\
-Skew-normal, separated & RJ pool, MM, PL, $m{=}3$ & 0.59 & 33.97 & 60.24 & Gibbs, prior, $m{=}1$ & 1.42 & 24.28 & 30.77 & 0.71 \\
-Poisson & RJ pool, MM, PL, $m{=}1$ & 0.48 & 153.20 & 191.91 & Gibbs, MM, $m{=}1$ & 1.08 & 92.83 & 100.18 & 0.61 \\
-Dengue & RJ pool, prior, ML, $m{=}3$ & 4.75 & 8.11 & 16.13 & Gibbs, prior, $m{=}1$ & 7.20 & 6.69 & 10.86 & 0.83 \\
-Old Faithful & RJ pool, MM, PL, $m{=}10$ & 1.39 & 41.15 & 56.69 & Gibbs, prior, $m{=}1$ & 4.66 & 30.67 & 30.01 & 0.75 \\
+Skew-normal, overlapping & RJ pool, MM, ML, $m{=}1$ & 1.14 & 2.25 & 8.91 & Aux. Gibbs, MM, $m{=}1$ & 1.57 & 2.77 & 9.35 & 1.23 \\
+Skew-normal, separated & RJ pool, MM, PL, $m{=}3$ & 0.59 & 33.97 & 60.24 & Aux. Gibbs, prior, $m{=}1$ & 1.42 & 24.28 & 30.77 & 0.71 \\
+Poisson & RJ pool, MM, PL, $m{=}1$ & 0.48 & 153.20 & 191.91 & Aux. Gibbs, MM, $m{=}1$ & 1.08 & 92.83 & 100.18 & 0.61 \\
+Dengue & RJ pool, prior, ML, $m{=}3$ & 4.75 & 8.11 & 16.13 & Aux. Gibbs, prior, $m{=}1$ & 7.20 & 6.69 & 10.86 & 0.83 \\
+Old Faithful & RJ pool, MM, PL, $m{=}10$ & 1.39 & 41.15 & 56.69 & Aux. Gibbs, prior, $m{=}1$ & 4.66 & 30.67 & 30.01 & 0.75 \\
 \bottomrule
 \end{tabular}
