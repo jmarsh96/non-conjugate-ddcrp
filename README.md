@@ -96,6 +96,16 @@ julia --project=. src/run_scaling.jl
 julia --project=. src/analyse_scaling.jl
 ```
 
+Replicated simulated data sets (Supplement S13). Reruns a reduced set of samplers, the best of
+each form in the comparison and the two ends of its design ladder, on 20 fresh draws of each
+simulated scenario for 20,000 sweeps from two shared starts, to see how stable the ranking is
+across data sets. About 3 core-hours; needs the simulated studies and the comparison first.
+
+```bash
+julia --project=. src/run_replicates.jl
+julia --project=. src/analyse_replicates.jl
+```
+
 Dengue prior sensitivity (Supplement S8). Reruns the final dengue sampler with the prior on the
 incidence centred at half and twice the state-wide incidence, one chain each, and compares them
 with the four main chains. Needs the main dengue chains and `similarity_matrix.jld2`, so run
@@ -139,6 +149,7 @@ themselves are not included as they come to tens of gigabytes; the run scripts r
 - `results/gibbs_comparison/` (`gibbs_comparison_numbers.tex` lists the numbers for the text)
 - `results/sampler_study/` (birth oracle diagnostic)
 - `results/scaling/` (scaling study)
+- `results/replicates/` (replicated simulated data sets)
 
 ## Which script writes what
 
@@ -147,14 +158,15 @@ Every table and figure in the paper is written by one of the analyse scripts, wh
 
 | Paper | Output | Script |
 |---|---|---|
-| Tables 2, 3, Figure 1, Table S8 (a to c) | `table_gibbs_vs_rj.tex`, `table_rj_ladder.tex`, `gibbs_vs_rj_ess.png`, `table_gibbs_vs_rj_full_{a,b,c}.tex` | `analyse_gibbs_comparison.jl` |
-| Table 4, Table S9 | `table_births_oracle_main.tex`, `table_births_oracle.tex` | `analyse_births.jl` |
-| Table 5, Figure 2, Tables S2 to S5, Figures S4, S5 | `table_skew_*.tex`, `skew_*.png` | `analyse_skewnormal.jl` |
+| Tables 3, 4, Figure 1, Table S8 (a to c), Figure S11 | `table_gibbs_vs_rj.tex`, `table_rj_ladder.tex`, `gibbs_vs_rj_ess.png`, `table_gibbs_vs_rj_full_{a,b,c}.tex`, `gibbs_vs_rj_coclust.png` | `analyse_gibbs_comparison.jl` |
+| Table 5, Table S9 | `table_births_oracle_main.tex`, `table_births_oracle.tex` | `analyse_births.jl` |
+| Table 6, Figure 2, Tables S2 to S5, Figures S4, S5 | `table_skew_*.tex`, `skew_*.png` | `analyse_skewnormal.jl` |
 | Table S1, Figures S1 to S3 | `table_overlapping.tex`, `data_overview.png`, `k_alpha_traces.png`, `pk_distribution.png` | `analyse_poisson.jl` |
 | Figures S6 to S8 | `k_posterior.png`, `traces.png`, `point_clustering_arrows.png`, `ppc.png` | `analyse_old_faithful.jl` |
 | Figures 3, 4, S9, S10, Table S6, numbers in Section 6 | `dengue_*.png`, `table_dengue.tex`, `dengue_numbers.tex` | `analyse_dengue.jl`, `map_dengue.R` |
 | Table S7 | `table_dengue_prior.tex` | `run_dengue_prior.jl` |
 | Table S10 | `table_scaling.tex` | `analyse_scaling.jl` |
+| Table S11, Figure S12 | `table_replicates.tex`, `replicates_ess.png` | `analyse_replicates.jl` |
 
 ## Compute
 

@@ -28,10 +28,13 @@ function build_scenario(x_centers, x_sd, pars; x_seed=0, y_seed=2)
     return (y=y, D=D, c=C_FIXED, x=x, pars=pars)
 end
 
-const SIM_OVERLAPPING = build_scenario(
-    [-3.0, 0.0, 3.0], 1.5, [(0.0, 2.0, 5.0), (4.0, 2.0, 0.0), (8.0, 2.0, -5.0)]; x_seed=0, y_seed=2)
-const SIM_SEPARATED = build_scenario(
-    [-6.0, 0.0, 6.0], 1.0, [(0.0, 1.5, 5.0), (8.0, 1.5, 0.0), (16.0, 1.5, -5.0)]; x_seed=1, y_seed=3)
+# Covariate centres and spread and the (ξ, ω, κ) of each cluster; run_replicates.jl redraws
+# these designs with other seeds
+const SCENARIO_DESIGN = Dict(
+    "overlapping" => ([-3.0, 0.0, 3.0], 1.5, [(0.0, 2.0, 5.0), (4.0, 2.0, 0.0), (8.0, 2.0, -5.0)]),
+    "separated" => ([-6.0, 0.0, 6.0], 1.0, [(0.0, 1.5, 5.0), (8.0, 1.5, 0.0), (16.0, 1.5, -5.0)]))
+const SIM_OVERLAPPING = build_scenario(SCENARIO_DESIGN["overlapping"]...; x_seed=0, y_seed=2)
+const SIM_SEPARATED = build_scenario(SCENARIO_DESIGN["separated"]...; x_seed=1, y_seed=3)
 const SCENARIOS = [("overlapping", SIM_OVERLAPPING), ("separated", SIM_SEPARATED)]
 
 # Oracle-diagnostic scenarios (diagnose_births.jl): the paper's two data sets and two more

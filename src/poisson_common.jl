@@ -27,6 +27,13 @@ end
 
 const Y_OVERLAPPING = simulate_poisson(C_FIXED, [1.0, 4.0, 7.0]; seed=2)
 const SIM_OVERLAPPING = (y=Y_OVERLAPPING, D=D_SIM, c=C_FIXED, x=X_SIM, λs=[1.0, 4.0, 7.0])
+
+# The same design with other seeds (run_replicates.jl); the paper's data set is (0, 2)
+function make_poisson_scenario(; x_seed=0, y_seed=2)
+    x = make_cluster_x(N_OBS, [-3.0, 0.0, 3.0], 1.5; seed=x_seed)
+    y = simulate_poisson(C_FIXED, [1.0, 4.0, 7.0]; seed=y_seed)
+    return (y=y, D=pairwise(Euclidean(), reshape(x, 1, :)), c=C_FIXED, x=x, λs=[1.0, 4.0, 7.0])
+end
 const SCENARIOS = [("overlapping", SIM_OVERLAPPING)]
 
 # Model settings
