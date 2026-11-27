@@ -181,5 +181,3 @@ comparison (one to six hours per study; the dengue comparison needs about 5 GB p
 iteration cap) and the skew-normal study (about 5 hours on 8 workers). Everything else runs in
 minutes to an hour on a laptop. `DDCRP.jl` is released under the MIT licence.
 
-The paper lives in its own repo. If it is cloned into `docs/ddcrp-paper/`, the analyse scripts
-will also copy the figures and tables into it.
