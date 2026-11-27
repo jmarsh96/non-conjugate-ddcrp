@@ -1,0 +1,387 @@
+# Auxiliary Gibbs (Supplement S1) against reversible jump on the same posterior, from four
+# shared starts and with equal wall-clock per chain (set by the pilot in pilot_timing.csv).
+# RJ runs as published and as the Metropolised Algorithm 8 (`AuxiliaryMH`, "RJ pool").
+#
+# Old Faithful first tunes its LNMM birth σ by ESJD(K), like the other studies (--tune reruns it).
+# --configs "a;b" runs only the configs whose labels start with a or b (re-piloted under --pilot)
+# and replaces their rows in chains_<study>.csv.
+#
+#   julia --project=. src/run_gibbs_comparison.jl --study {skewnormal|poisson|dengue|old_faithful}
+#         [--configs "a;b"] [--pilot] [--tune] [--test] [--slurm] [--workers N]
+
+using CSV, DataFrames, Distances, Statistics, StatsBase, Random, JLD2, Printf, Distributions
+using Distributed
+
+function arg_value(flag, default)
+    i = findfirst(==(flag), ARGS)
+    isnothing(i) ? default : ARGS[i+1]
+end
+const STUDY = arg_value("--study", "")
+STUDY in ("skewnormal", "poisson", "dengue", "old_faithful") ||
+    error("--study must be one of skewnormal, poisson, dengue, old_faithful")
+const USE_SLURM = "--slurm" in ARGS
+const IS_TEST = "--test" in ARGS
+const FORCE_PILOT = "--pilot" in ARGS
+const FORCE_TUNE = "--tune" in ARGS
+const CONFIG_PREFIXES = filter(!isempty, strip.(split(arg_value("--configs", ""), ";")))
+
+if USE_SLURM
+    using SlurmClusterManager
+    # The 60s default is too short for a wide allocation.
+    addprocs(SlurmManager(launch_timeout = 300.0))
+else
+    addprocs(parse(Int, arg_value("--workers", "8")))
+end
+
+const SRC = @__DIR__
+@everywhere begin
+    using Pkg; Pkg.activate(joinpath($SRC, ".."))
+    using DistanceDependentCRP, CSV, DataFrames, Distances, Statistics, StatsBase,
+          Distributions, JLD2, Random, LinearAlgebra
+    BLAS.set_num_threads(1)
+end
+if STUDY == "skewnormal"
+    @everywhere include($(joinpath(SRC, "skewnormal_model.jl")))
+    @everywhere include($(joinpath(SRC, "skewnormal_common.jl")))
+elseif STUDY == "poisson"
+    @everywhere include($(joinpath(SRC, "poisson_common.jl")))
+elseif STUDY == "dengue"
+    @everywhere include($(joinpath(SRC, "negbin_population_model.jl")))
+    @everywhere include($(joinpath(SRC, "dengue_common.jl")))
+else
+    @everywhere include($(joinpath(SRC, "old_faithful_common.jl")))
+end
+
+# Settings
+
+const M_POOL = [1, 3, 10, 30]
+const M_POOL_MH = [1, 3, 10, 30]
+# Gibbs scores the moving set only under blocks within this log link weight of the largest (the
+# rest by an exact MH move): dengue's hop window puts every block outside it at log weight -30
+const GIBBS_SKIP = get(Dict("dengue" => 10.0), STUDY, Inf)
+const STARTS = [:singletons, :one_cluster, :prior_a, :prior_b]
+const START_SEEDS = Dict(:singletons => 1001, :one_cluster => 1002, :prior_a => 1003, :prior_b => 1004)
+
+# Wall-clock budget per chain (s); N_MAX bounds memory
+const BUDGET = IS_TEST ? Dict("skewnormal" => 4.0, "poisson" => 4.0, "dengue" => 8.0, "old_faithful" => 4.0) :
+    Dict("skewnormal" => 600.0, "poisson" => 600.0, "dengue" => 3600.0, "old_faithful" => 900.0)
+const N_MAX = IS_TEST ? 1_500 :
+    Dict("skewnormal" => 200_000, "poisson" => 220_000, "dengue" => 300_000, "old_faithful" => 250_000)[STUDY]
+const N_MIN = IS_TEST ? 100 : 2_000
+const N_PILOT = IS_TEST ? 20 : 300
+const BURN_FRAC = 0.1
+const MAX_STORED = IS_TEST ? 1_000 : 25_000
+@everywhere const PK_MAX = 30
+
+# Old Faithful σ tuning, as in run_skewnormal.jl
+const TUNE_GRID = IS_TEST ? [0.25, 1.0] : [0.1, 0.25, 0.5, 1.0, 2.0]
+const TUNE_SEEDS = [42, 202]
+const N_TUNE = IS_TEST ? 1_000 : 40_000
+const BURN_TUNE = IS_TEST ? 200 : 5_000
+const THIN_TUNE = 5
+
+const ROOT = joinpath(SRC, "..", "results", IS_TEST ? "gibbs_comparison_test" : "gibbs_comparison")
+const OUTDIR = joinpath(ROOT, STUDY)
+mkpath(joinpath(OUTDIR, "chains"))
+
+fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
+
+function birth_family(fam::Symbol, σ)
+    fam === :prior && return PriorProposal()
+    fam === :nmm   && return NormalMomentMatch(σ)
+    fam === :lnmm  && return LogNormalMomentMatch(σ)
+    fam === :ig    && return InverseGammaMomentMatch()
+    error("unknown family $fam")
+end
+
+# Study specifications
+
+const RESULTS = joinpath(SRC, "..", "results")
+const OF_TUNED_FILE = IS_TEST ? joinpath(OUTDIR, "tuned_sigma.csv") :
+    joinpath(RESULTS, "old_faithful", "tuned_sigma.csv")
+
+function study_spec(study)
+    if study == "skewnormal"
+        t = CSV.read(joinpath(RESULTS, "simulation_study", "skewnormal", "tuned_sigma.csv"), DataFrame)
+        σ = NamedTuple{(:ξ, :ω, :α)}(Tuple(t.σ[findfirst(==(p), t.param)] for p in ("ξ", "ω", "α")))
+        return (
+            scenarios = [(name = s, y = sim.y, D = sim.D, E = nothing, true_c = sim.c) for (s, sim) in SCENARIOS],
+            model = SkewNormalClusters(), priors = PRIORS, ddcrp = DDCRP_PARAMS,
+            prop_sds = Dict(:ξ => PROP_SDS.ξ, :ω => PROP_SDS.ω, :α => PROP_SDS.α),
+            q_mm = make_birth(:nmm, :lnmm, :nmm, σ), q_mm_name = "ξ:NMM ω:LNMM α:NMM (tuned)",
+            q_prior = make_birth(:prior, :prior, :prior, σ),
+            rj = [(:mm, UniformLink(), NoUpdate(), "none"), (:mm, PriorLink(), NoUpdate(), "none"),
+                  (:prior, UniformLink(), NoUpdate(), "none")],
+            collapsed = nothing,
+        )
+    elseif study == "poisson"
+        f = CSV.read(joinpath(RESULTS, "simulation_study", "poisson", "summary_final.csv"), DataFrame)
+        best = filter(r -> occursin("[best]", r.label) && r.fdim == "none", f)
+        b = best[argmax(best.esjd_K), :]
+        q_mm = birth_family(Symbol(b.birth), b.tune_param)
+        return (
+            scenarios = [(name = s, y = sim.y, D = sim.D, E = nothing, true_c = sim.c) for (s, sim) in SCENARIOS],
+            model = PoissonClusterRates(), priors = PRIORS, ddcrp = DDCRP_PARAMS,
+            prop_sds = Dict{Symbol,Float64}(),
+            q_mm = q_mm, q_mm_name = "$(uppercase(b.birth)) σ=$(b.tune_param) (tuned)",
+            q_prior = FixedDistributionProposal(Gamma(PRIORS.λ_a, 1 / PRIORS.λ_b)),
+            rj = [(:mm, UniformLink(), NoUpdate(), "none"), (:mm, PriorLink(), NoUpdate(), "none"),
+                  (:prior, UniformLink(), NoUpdate(), "none")],
+            collapsed = (model = PoissonClusterRatesMarg(), priors = PRIORS_MARG),
+        )
+    elseif study == "dengue"
+        S = load_dengue_study(41, 2024)
+        f = CSV.read(joinpath(RESULTS, "real_data", "dengue", "summary_final.csv"), DataFrame)
+        w = first(filter(r -> r.family == "negbin", f))
+        w.fdim == "none" || error("the dengue comparison assumes a No Update winner")
+        mk(fρ, fr) = MixedProposal((ρ = birth_family(fρ, w.σ_birth), r = birth_family(fr, w.σ_birth)))
+        return (
+            scenarios = [(name = "parana_2024", y = S.y, D = S.D, E = S.E, true_c = nothing)],
+            model = NegBinPopulationRates(), priors = S.priors,
+            ddcrp = DDCRPParams(1.0, KERNEL_RATE, DistanceDependentCRP.exp_decay, 1.0, 0.01, 1.0, 0.01),
+            prop_sds = Dict(:ρ => 0.15, :r => 0.30),
+            q_mm = mk(Symbol(w.fam_ρ), Symbol(w.fam_r)), q_mm_name = "ρ:$(uppercase(w.fam_ρ)) r:$(uppercase(w.fam_r)) σ=$(w.σ_birth)",
+            q_prior = mk(:prior, :prior),
+            rj = [(:mm, PriorLink(), NoUpdate(), "none"), (:prior, PriorLink(), NoUpdate(), "none")],
+            collapsed = nothing,
+        )
+    else
+        # IGMM falls back to the prior for a Gamma shape, so q_prior is the published proposal
+        σ = CSV.read(OF_TUNED_FILE, DataFrame).σ[1]
+        return (
+            scenarios = [(name = "faithful", y = Y_FAITHFUL, D = D_FAITHFUL, E = nothing, true_c = nothing)],
+            model = MODEL, priors = PRIORS, ddcrp = DDCRP_PARAMS,
+            prop_sds = Dict(:α => PROP_SD_SHAPE),
+            q_mm = LogNormalMomentMatch(σ), q_mm_name = "LNMM σ=$(σ) (tuned)",
+            q_prior = PriorProposal(),
+            rj = [(:prior, UniformLink(), Resample(InverseGammaMomentMatch()), "resample"),
+                  (:prior, UniformLink(), NoUpdate(), "none"),
+                  (:mm, UniformLink(), NoUpdate(), "none"), (:mm, PriorLink(), NoUpdate(), "none")],
+            collapsed = nothing,
+        )
+    end
+end
+
+linkname(::UniformLink) = "uniform"
+linkname(::PriorLink) = "prior"
+linkname(::MetropolisedPriorLink) = "metropolised"
+
+function sampler_configs(spec)
+    cfgs = NamedTuple[]
+    if !isnothing(spec.collapsed)
+        push!(cfgs, (label = "Collapsed Gibbs", sampler = "collapsed", q = "none", m = 0,
+                     link = "none", fdim = "none", model = spec.collapsed.model,
+                     priors = spec.collapsed.priors, proposal = ConjugateProposal(),
+                     fdim_prop = NoUpdate(), link_prop = UniformLink()))
+    end
+    for (q, link, fdim, fdim_name) in spec.rj
+        qp = q === :mm ? spec.q_mm : spec.q_prior
+        lbl = "RJ q:$(q) link:$(linkname(link))" * (fdim_name == "resample" ? " + Resample" : "")
+        push!(cfgs, (label = lbl, sampler = "rj", q = String(q), m = 0, link = linkname(link),
+                     fdim = fdim_name, model = spec.model, priors = spec.priors, proposal = qp,
+                     fdim_prop = fdim, link_prop = link))
+    end
+    # Metropolised Algorithm 8 (m = 1: RJ No Update, scored on the moving set only)
+    for (q, link) in ((:mm, PriorLink()), (:mm, MetropolisedPriorLink()), (:prior, MetropolisedPriorLink())),
+            m in M_POOL_MH
+        qp = q === :mm ? spec.q_mm : spec.q_prior
+        push!(cfgs, (label = "RJ pool q:$(q) link:$(linkname(link)) m=$(m)", sampler = "aux_mh", q = String(q),
+                     m = m, link = linkname(link), fdim = "none", model = spec.model, priors = spec.priors,
+                     proposal = AuxiliaryMH(qp, m), fdim_prop = NoUpdate(), link_prop = link))
+    end
+    for q in (:mm, :prior), m in M_POOL
+        qp = q === :mm ? spec.q_mm : spec.q_prior
+        push!(cfgs, (label = "Gibbs q:$(q) m=$(m)", sampler = "aux_gibbs", q = String(q), m = m,
+                     link = "exact", fdim = "none", model = spec.model, priors = spec.priors,
+                     proposal = AuxiliaryGibbs(qp, m; skip = GIBBS_SKIP), fdim_prop = NoUpdate(),
+                     link_prop = UniformLink()))
+    end
+    return cfgs
+end
+
+function make_run(c, sc, start; n_samples, burn, thin, save_chain = true)
+    merge(c, (
+        scenario = sc.name, y = sc.y, D = sc.D, E = sc.E, true_c = sc.true_c,
+        ddcrp = SPEC.ddcrp, prop_sds = SPEC.prop_sds, init_proposal = SPEC.q_mm,
+        start = start, start_seed = START_SEEDS[start],
+        n_samples = n_samples, burn = burn, thin = thin, save_chain = save_chain,
+        chain_file = joinpath(OUTDIR, "chains", fmtlabel("$(c.label)_$(sc.name)_$(start)") * ".jld2"),
+    ))
+end
+
+# Worker side
+
+@everywhere begin
+    function make_data(cfg)
+        !isnothing(cfg.E) && return CountDataWithPopulation(cfg.y, cfg.E, cfg.D)
+        eltype(cfg.y) <: Integer && return CountData(cfg.y, cfg.D)
+        return ContinuousData(cfg.y, cfg.D)
+    end
+
+    function start_links(start::Symbol, D, ddcrp)
+        n = size(D, 1)
+        start === :singletons && return collect(1:n)
+        start === :one_cluster && return ones(Int, n)
+        return simulate_ddcrp(D; α = ddcrp.α, scale = ddcrp.scale, decay_fn = ddcrp.decay_fn)
+    end
+
+    function run_chain(cfg, n_samples)
+        opts = MCMCOptions(
+            n_samples = n_samples, verbose = false, track_diagnostics = true,
+            infer_params = Dict{Symbol,Bool}(:α_ddcrp => true, :s_ddcrp => false),
+            prop_sds = merge(Dict(:s_ddcrp => 0.3), cfg.prop_sds),
+            link_proposal = cfg.link_prop,
+        )
+        Random.seed!(cfg.start_seed)
+        init_c = start_links(cfg.start, cfg.D, cfg.ddcrp)
+        return mcmc(cfg.model, make_data(cfg), cfg.ddcrp, cfg.priors, cfg.proposal;
+                    fixed_dim_proposal = cfg.fdim_prop, opts = opts,
+                    init_c = init_c, init_proposal = cfg.init_proposal)
+    end
+
+    thin_samples(s, keep) = typeof(s)((f isa AbstractMatrix ? f[keep, :] : f[keep]
+                                       for f in (getfield(s, k) for k in fieldnames(typeof(s))))...)
+
+    function mean_moving_set(c_samples; n_draws = 100)
+        rows = unique(round.(Int, range(1, size(c_samples, 1); length = n_draws)))
+        mean(mean(length(get_moving_set(i, c_samples[r, :])) for i in axes(c_samples, 2)) for r in rows)
+    end
+
+    function pilot_time(cfg)
+        run_chain(cfg, 3)                      # compile
+        t = @elapsed run_chain(cfg, cfg.n_samples)
+        return (label = cfg.label, scenario = cfg.scenario, n_pilot = cfg.n_samples,
+                sec_per_iter = t / cfg.n_samples)
+    end
+
+    function run_and_save(cfg)
+        run_chain(cfg, 3)                      # compile
+        total_time = @elapsed begin
+            samples, diag = run_chain(cfg, cfg.n_samples)
+        end
+
+        keep = (cfg.burn + 1):cfg.thin:cfg.n_samples
+        post = thin_samples(samples, keep)
+        k_trace = Float64.(calculate_n_clusters(post.c))
+        acc = acceptance_rates(diag)
+        ess_K = effective_sample_size(k_trace)
+        ari = isnothing(cfg.true_c) ? NaN : mean(compute_ari_trace(post.c, cfg.true_c))
+
+        cfg.save_chain && jldsave(cfg.chain_file; samples = post, c = post.c, logpost = post.logpost,
+                                  alpha_ddcrp = post.α_ddcrp, burn = 0, thin = 1,
+                                  burn_applied = cfg.burn, thin_applied = cfg.thin, label = cfg.label)
+
+        pk = NamedTuple{Tuple(Symbol("pk_$k") for k in 1:PK_MAX)}(Tuple(mean(k_trace .== k) for k in 1:PK_MAX))
+        return merge((
+            label = cfg.label, sampler = cfg.sampler, q = cfg.q, m = cfg.m, link = cfg.link,
+            fdim = cfg.fdim, scenario = cfg.scenario, start = String(cfg.start),
+            n_iter = cfg.n_samples, burn = cfg.burn, thin = cfg.thin, n_post = length(k_trace),
+            total_time = total_time,
+            sec_per_1k = 1000 * total_time / cfg.n_samples,
+            mean_K = mean(k_trace), std_K = std(k_trace),
+            mean_moving_set = mean_moving_set(post.c),
+            ess_K = ess_K, ess_K_per_sec = ess_K / total_time,
+            esjd_K = mean(diff(k_trace) .^ 2),
+            ess_logpost = effective_sample_size(post.logpost),
+            mean_logpost = mean(post.logpost),
+            α_post = mean(post.α_ddcrp),
+            mean_ari = ari,
+            acc_birth = acc.birth, acc_death = acc.death, acc_fixed = acc.fixed, acc_overall = acc.overall,
+            gibbs_skip = cfg.proposal isa AuxiliaryGibbs ? cfg.proposal.skip : NaN,
+            chain_file = basename(cfg.chain_file),
+        ), pk)
+    end
+end
+
+# Old Faithful: tune the LNMM birth σ for RJ No Update by ESJD(K)
+
+tuned_now = false
+if STUDY == "old_faithful" && (FORCE_TUNE || !isfile(OF_TUNED_FILE))
+    tcfgs = [(model = MODEL, priors = PRIORS, ddcrp = DDCRP_PARAMS, prop_sds = Dict(:α => PROP_SD_SHAPE),
+              proposal = LogNormalMomentMatch(σ), init_proposal = LogNormalMomentMatch(σ),
+              fdim_prop = NoUpdate(), link_prop = UniformLink(), y = Y_FAITHFUL, D = D_FAITHFUL,
+              E = nothing, start = :prior_a, start_seed = seed, σ = σ, n_samples = N_TUNE,
+              burn = BURN_TUNE, thin = THIN_TUNE)
+             for σ in TUNE_GRID for seed in TUNE_SEEDS]
+    println("Tuning LNMM σ: $(length(tcfgs)) chains of $(N_TUNE) iterations")
+    tune = DataFrame(pmap(tcfgs) do cfg
+        samples, _ = run_chain(cfg, cfg.n_samples)
+        k = Float64.(calculate_n_clusters(samples.c[(cfg.burn + 1):cfg.thin:end, :]))
+        (σ = cfg.σ, seed = cfg.start_seed, esjd_K = mean(diff(k) .^ 2), ess_K = effective_sample_size(k))
+    end)
+    by_σ = combine(groupby(tune, :σ), :esjd_K => mean => :esjd_K, :ess_K => mean => :ess_K)
+    best = by_σ.σ[argmax(by_σ.esjd_K)]
+    for r in eachrow(by_σ)
+        @printf("  σ = %-5.2f  ESJD(K) = %.4f  ESS(K) = %6.1f%s\n", r.σ, r.esjd_K, r.ess_K,
+                r.σ == best ? "  <- selected" : "")
+    end
+    mkpath(dirname(OF_TUNED_FILE))
+    CSV.write(joinpath(dirname(OF_TUNED_FILE), "summary_tune.csv"), tune)
+    CSV.write(OF_TUNED_FILE, DataFrame(param = ["α"], σ = [best]))
+    global tuned_now = true
+end
+
+const SPEC = study_spec(STUDY)
+
+# Pilot
+
+selected(label) = isempty(CONFIG_PREFIXES) || any(p -> startswith(label, p), CONFIG_PREFIXES)
+const CONFIGS = filter(c -> selected(c.label), sampler_configs(SPEC))
+isempty(CONFIGS) && error("--configs matches no config")
+const PILOT_FILE = joinpath(OUTDIR, "pilot_timing.csv")
+
+println("Study $(STUDY): $(length(CONFIGS)) samplers × $(length(SPEC.scenarios)) scenario(s) × $(length(STARTS)) starts")
+println("  q_mm = $(SPEC.q_mm_name)")
+
+# A pilot of every config, or of the configs missing from an existing pilot_timing.csv
+# (--pilot with --configs re-pilots only the selected ones)
+old_pilot = (FORCE_PILOT && isempty(CONFIG_PREFIXES)) || tuned_now || !isfile(PILOT_FILE) ? nothing :
+    CSV.read(PILOT_FILE, DataFrame)
+FORCE_PILOT && !isnothing(old_pilot) && (old_pilot = filter(r -> !selected(r.label), old_pilot))
+timed = isnothing(old_pilot) ? Set{Tuple{String,String}}() : Set(zip(old_pilot.label, old_pilot.scenario))
+pcfgs = [make_run(c, sc, :prior_a; n_samples = N_PILOT, burn = 0, thin = 1, save_chain = false)
+         for c in CONFIGS for sc in SPEC.scenarios if !((c.label, sc.name) in timed)]
+if !isempty(pcfgs)
+    println("Pilot: $(length(pcfgs)) runs of $(N_PILOT) iterations")
+    pilot = DataFrame(pmap(pilot_time, pcfgs))
+    CSV.write(PILOT_FILE, isnothing(old_pilot) ? pilot : vcat(old_pilot, pilot; cols = :union))
+end
+const PILOT = CSV.read(PILOT_FILE, DataFrame)
+
+function chain_length(label, scenario)
+    r = PILOT[(PILOT.label .== label) .& (PILOT.scenario .== scenario), :]
+    nrow(r) == 1 || error("no pilot timing for $label / $scenario; rerun with --pilot")
+    n = clamp(round(Int, BUDGET[STUDY] / r.sec_per_iter[1]), N_MIN, N_MAX)
+    burn = round(Int, BURN_FRAC * n)
+    return (n_samples = n, burn = burn, thin = max(1, cld(n - burn, MAX_STORED)))
+end
+
+for c in CONFIGS, sc in SPEC.scenarios
+    L = chain_length(c.label, sc.name)
+    @printf("  %-28s %-12s %8d iterations (burn %d, thin %d)\n", c.label, sc.name, L.n_samples, L.burn, L.thin)
+end
+
+# Main run
+
+runs = [make_run(c, sc, st; chain_length(c.label, sc.name)...)
+        for c in CONFIGS for sc in SPEC.scenarios for st in STARTS]
+println("Running $(length(runs)) chains on $(nworkers()) workers")
+rows = pmap(run_and_save, runs)
+df = DataFrame(rows)
+df.study .= STUDY
+df.q_mm_name .= SPEC.q_mm_name
+CHAINS_FILE = joinpath(OUTDIR, "chains_$(STUDY).csv")
+if !isempty(CONFIG_PREFIXES) && isfile(CHAINS_FILE)
+    old = filter(r -> !(r.label in Set(df.label)), CSV.read(CHAINS_FILE, DataFrame))
+    df_out = vcat(old, df; cols = :union)
+else
+    df_out = df
+end
+CSV.write(CHAINS_FILE, df_out)
+
+@printf("\n%-28s %-12s %10s %10s %10s %8s\n", "sampler", "scenario", "ESS(K)", "ESS(K)/s", "s/1k it", "mean K")
+for g in groupby(df, [:label, :scenario]; sort = false)
+    @printf("%-28s %-12s %10.1f %10.3f %10.3f %8.2f\n", g.label[1], g.scenario[1],
+            mean(g.ess_K), mean(g.ess_K_per_sec), mean(g.sec_per_1k), mean(g.mean_K))
+end
+println("\nWrote $(joinpath(OUTDIR, "chains_$(STUDY).csv"))")

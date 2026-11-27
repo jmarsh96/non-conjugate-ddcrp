@@ -60,14 +60,14 @@ end
 
 @everywhere function run_prior_chain(cfg)
     Random.seed!(cfg.seed)
+    σ = cfg.σ_birth
+    birth = MixedProposal((ξ = _birth_family(cfg.fam[1], σ.ξ), ω = _birth_family(cfg.fam[2], σ.ω),
+                           α = _birth_family(cfg.fam[3], σ.α)))
     opts = MCMCOptions(
         n_samples = cfg.n_samples, verbose = false, track_diagnostics = true,
         infer_params = Dict{Symbol,Bool}(:α_ddcrp => false, :s_ddcrp => false),
         prop_sds = Dict{Symbol,Float64}(:ξ => PROP_SDS.ξ, :ω => PROP_SDS.ω, :α => PROP_SDS.α),
     )
-    σ = cfg.σ_birth
-    birth = MixedProposal((ξ = _birth_family(cfg.fam[1], σ.ξ), ω = _birth_family(cfg.fam[2], σ.ω),
-                           α = _birth_family(cfg.fam[3], σ.α)))
     fdim = cfg.resample ? MixedFixedDim((
         ξ = Resample(_birth_family(cfg.fam[1], cfg.σ_resample)),
         ω = Resample(_birth_family(cfg.fam[2], cfg.σ_resample)),
@@ -138,10 +138,10 @@ const SUFFIX = RERUN ? "_rerun" : ""
 CSV.write(joinpath(OUTDIR, "summary_geweke$(SUFFIX).csv"), df)
 
 println()
-@printf("%-22s %-9s %7s %7s %7s %7s %7s %7s %7s\n",
+@printf("%-26s %-9s %7s %7s %7s %7s %7s %7s %7s\n",
         "ξ / ω / α", "fixed", "E[K]", "TV(K)", "z_K", "z_ξ", "z_ω", "z_α", "ESS(K)")
 for r in eachrow(df)
-    @printf("%-22s %-9s %7.3f %7.4f %7.2f %7.2f %7.2f %7.2f %7.0f%s\n", r.birth, r.fdim, r.mean_K,
+    @printf("%-26s %-9s %7.3f %7.4f %7.2f %7.2f %7.2f %7.2f %7.0f%s\n", r.birth, r.fdim, r.mean_K,
             r.tv_K, r.z_K, r.z_ξ, r.z_ω, r.z_α, r.ess_K, r.max_abs_z > 3.5 ? "  <-- FAILS" : "")
 end
 @printf("Reference E[K] = %.3f\n", mean(k_ref))

@@ -3,6 +3,7 @@
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 ENV["GKSwstype"] = "nul"   # use GR's null backend; avoids Qt QPainterPath warnings
 using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase, JLD2, Printf, Distributions
+include(joinpath(@__DIR__, "plot_style.jl"))
 include(joinpath(@__DIR__, "dengue_common.jl"))   # dahl_point_estimate
 
 const OUTDIR = joinpath(@__DIR__, "..", "results", "old_faithful")
@@ -79,7 +80,7 @@ fig1 = bar(k_vals, k_freq;
     xlabel = "K",
     ylabel = "Posterior probability",
     legend = false,
-    color = :steelblue,
+    color = OI_BLUE,
     bar_width = 0.6,
     tickfontsize = 10,
     guidefontsize = 12,
@@ -97,7 +98,7 @@ println("  Saved k_posterior.png")
 println("\nGenerating trace plots figure...")
 common_trace_kw = (
     legend = false,
-    color = :steelblue,
+    color = OI_BLUE,
     linewidth = 0.8,
     tickfontsize = 10,
     guidefontsize = 12,
@@ -151,7 +152,7 @@ link_prob ./= n_samp
 
 threshold = 0.02
 p_max = maximum(link_prob[i, j] for i in 1:n, j in 1:n if i != j)
-arrow_cmap = cgrad(:YlOrRd, [0.0, 1.0])
+arrow_cmap = GREY_RAMP
 
 for i in 1:n
     row = [j == i ? -Inf : link_prob[i, j] for j in 1:n]
@@ -162,7 +163,7 @@ for i in 1:n
         p < threshold && j ∉ top_js && continue
         quiver!(p_pt, [w[i]], [y[i]];
                 quiver = ([w[j] - w[i]], [y[j] - y[i]]),
-                color = get(arrow_cmap, 0.3 + 0.7 * p / p_max),
+                color = get(arrow_cmap, p / p_max),
                 linewidth = clamp(p / p_max * 2.5, 0.6, 2.5),
                 label = false)
     end
@@ -176,7 +177,7 @@ scatter!(p_pt, Float64[], Float64[];
 for (ci, k) in enumerate(clusters)
     mask = z_pt .== k
     scatter!(p_pt, w[mask], y[mask];
-             label="Cluster $ci", color=palette(:tab10)[ci],
+             label="Cluster $ci", color=CATEGORICAL[ci],
              markersize=4, alpha=0.85, markerstrokewidth=0.3)
 end
 
@@ -228,14 +229,14 @@ p_ppc = plot(
 
 for i in 1:n
     plot!(p_ppc, [i, i], [ppd_lower[i], ppd_upper[i]];
-          color=:lightblue, alpha=0.6, linewidth=1.2, label=false)
+          color=colorant"#BBBBBB", alpha=0.6, linewidth=1.2, label=false)
 end
 
 scatter!(p_ppc, 1:n, ppd_mean;
-         color=:steelblue, markersize=3, label="PPD mean", alpha=0.9,
+         color=OI_BLUE, markersize=3, label="PPD mean", alpha=0.9,
          markerstrokewidth=0.3)
 scatter!(p_ppc, 1:n, y;
-         color=:red, markersize=3, label="Observed", alpha=0.6,
+         color=OI_VERMILLION, markersize=3, label="Observed", alpha=0.6,
          markerstrokewidth=0.3)
 
 fig4 = plot(p_ppc; size=(900, 480))

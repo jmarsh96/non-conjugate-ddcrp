@@ -78,7 +78,6 @@ function fit_skewnormal_moments(ys; min_size::Int = 4)
     return (ξ, ω, clamp(α, -30.0, 30.0))
 end
 
-ω_prior_mean(p::SkewNormalClustersPriors) = p.ω_a > 1 ? p.ω_b / (p.ω_a - 1) : p.ω_b
 _view_S(data, S_i) = view(observations(data), S_i)
 
 # RJMCMC interface: parameter registry
@@ -235,6 +234,11 @@ function table_contribution(::SkewNormalClusters, table::AbstractVector{Int},
                 logpdf(Normal(priors.α_m, priors.α_s), α)
     return log_lik + log_prior
 end
+
+# table_contribution factorises as Σ log f(y_i | ξ, ω, α) + this
+DD.cluster_logprior(::SkewNormalClusters, ρ::NamedTuple, priors::SkewNormalClustersPriors) =
+    logpdf(Normal(priors.ξ_m, priors.ξ_s), ρ.ξ) + logpdf(InverseGamma(priors.ω_a, priors.ω_b), ρ.ω) +
+    logpdf(Normal(priors.α_m, priors.α_s), ρ.α)
 
 function posterior(model::SkewNormalClusters, data, state::SkewNormalClustersState,
         priors::SkewNormalClustersPriors, log_DDCRP::AbstractMatrix)

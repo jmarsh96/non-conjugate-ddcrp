@@ -183,29 +183,17 @@ mkpath(OUTDIR)
 
 # Data and the contiguity graph
 
-const DATA_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(UF)_$(YEAR).csv")
-isfile(DATA_FILE) || error("""
-    Missing $DATA_FILE
-    Run: julia --project=. src/prepare_dengue_data.jl --uf $UF --year $YEAR""")
-
-const ADJ_FILE = joinpath(@__DIR__, "..", "data", "cleaned", "dengue_uf$(UF)_adjacency.csv")
-isfile(ADJ_FILE) || error("""
-    Missing $ADJ_FILE
-    Run: Rscript src/prepare_dengue_adjacency.R --uf $UF""")
-
-const DF = CSV.read(DATA_FILE, DataFrame)
-const Y_ALL = Int.(DF.y)
-const E_ALL = Float64.(DF.pop) ./ 1e5          # exposure: population per 100k
+const STUDY = load_dengue_study(UF, YEAR)
+const DATA_FILE = STUDY.data_file
+const DF = STUDY.df
+const Y_ALL = STUDY.y
+const E_ALL = STUDY.E
 const N = length(Y_ALL)
 
-const A_ADJ = load_adjacency(ADJ_FILE, Int.(DF.geocode))
-const NBRS  = neighbour_lists(A_ADJ)
-const H_HOP = hop_distances(NBRS)
-any(isinf, H_HOP) && error("contiguity graph is disconnected; rebuild the edge list")
-
-const HOP_RADIUS  = 2
-const KERNEL_RATE = 1.0
-const D_ALL = hop_window_D(H_HOP, HOP_RADIUS)
+const A_ADJ = STUDY.A
+const NBRS  = STUDY.nbrs
+const H_HOP = STUDY.H
+const D_ALL = STUDY.D
 
 @printf("Loaded %s: %d municipalities, %d total cases, %.2f M people\n",
         basename(DATA_FILE), N, sum(Y_ALL), sum(DF.pop) / 1e6)
@@ -218,10 +206,10 @@ const D_ALL = hop_window_D(H_HOP, HOP_RADIUS)
 
 # Shared model settings
 
-const ρ_BAR = sum(Y_ALL) / sum(E_ALL)
-const ρ_A = 1.5
-const PRIORS = NegBinPopulationRatesPriors(ρ_a = ρ_A, ρ_b = ρ_A / ρ_BAR, r_a = 2.0, r_b = 0.5)
-const PRIORS_POIS = PoissonPopulationRatesPriors(ρ_A, ρ_A / ρ_BAR)
+const ρ_BAR = STUDY.ρ_bar
+const ρ_A = STUDY.ρ_a
+const PRIORS = STUDY.priors
+const PRIORS_POIS = STUDY.priors_pois
 
 @printf("  ρ prior: Gamma(%.1f, rate %.2e) ⇒ mean %.0f per 100k\n", ρ_A, ρ_A / ρ_BAR, ρ_BAR)
 

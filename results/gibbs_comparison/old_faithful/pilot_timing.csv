@@ -1,0 +1,25 @@
+label,scenario,n_pilot,sec_per_iter
+RJ q:prior link:uniform + Resample,faithful,300,0.0029187498433333333
+RJ q:prior link:uniform,faithful,300,0.0033609726366666667
+RJ q:mm link:uniform,faithful,300,0.0033934050233333335
+RJ q:mm link:prior,faithful,300,0.0010194030233333332
+RJ pool q:mm link:prior m=1,faithful,300,0.0019775329500000003
+RJ pool q:mm link:prior m=3,faithful,300,0.0019694520866666665
+RJ pool q:mm link:prior m=10,faithful,300,0.0027101544733333332
+RJ pool q:mm link:prior m=30,faithful,300,0.0028336548300000003
+RJ pool q:mm link:metropolised m=1,faithful,300,0.0017058560633333335
+RJ pool q:mm link:metropolised m=3,faithful,300,0.00277827355
+RJ pool q:mm link:metropolised m=10,faithful,300,0.002036199586666667
+RJ pool q:mm link:metropolised m=30,faithful,300,0.002602025773333333
+RJ pool q:prior link:metropolised m=1,faithful,300,0.0017813493166666668
+RJ pool q:prior link:metropolised m=3,faithful,300,0.00182156566
+RJ pool q:prior link:metropolised m=10,faithful,300,0.00327769897
+RJ pool q:prior link:metropolised m=30,faithful,300,0.00224808399
+Gibbs q:mm m=1,faithful,300,0.0035029567333333335
+Gibbs q:mm m=3,faithful,300,0.0034439375466666666
+Gibbs q:mm m=10,faithful,300,0.004033217803333333
+Gibbs q:mm m=30,faithful,300,0.004669042523333333
+Gibbs q:prior m=1,faithful,300,0.0035335362566666665
+Gibbs q:prior m=3,faithful,300,0.002605677423333333
+Gibbs q:prior m=10,faithful,300,0.002803841903333333
+Gibbs q:prior m=30,faithful,300,0.004806587986666667
