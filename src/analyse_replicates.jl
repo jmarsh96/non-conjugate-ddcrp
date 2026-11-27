@@ -11,6 +11,7 @@ using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using DataFrames, CSV, Statistics, Printf, StatsPlots, Random
 
 ENV["GKSwstype"] = "nul"   # headless GR
+include(joinpath(@__DIR__, "plot_style.jl"))
 
 const IS_TEST = "--test" in ARGS
 const ROOT = joinpath(@__DIR__, "..", "results", IS_TEST ? "replicates_test" : "replicates")
@@ -101,8 +102,8 @@ end
 
 # Figure: ESS(K)/s of every sampler on every data set, one panel per scenario
 
-const ROLE_COLOUR = Dict("collapsed" => colorant"#0b0b0b", "rj_ul" => colorant"#1baf7a", "pool_m1" => colorant"#eda100",
-                         "pool_best" => colorant"#b0233c", "gibbs_best" => colorant"#2a78d6")
+const ROLE_COLOUR = Dict("collapsed" => OI_BLACK, "rj_ul" => OI_SKY, "pool_m1" => OI_PURPLE,
+                         "pool_best" => OI_VERMILLION, "gibbs_best" => OI_BLUE)
 plots = map(enumerate(panels)) do (i, (st, sc))
     d = sort(S[(S.study .== st) .& (S.scenario .== sc), :], :role, by = rolerank)
     p = plot(yscale = :log10, title = PANEL[(st, sc)][1], titlefontsize = 12, legend = false,

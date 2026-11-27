@@ -2,6 +2,7 @@
 
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase, JLD2, Printf
+include(joinpath(@__DIR__, "plot_style.jl"))
 
 const OUTDIR = joinpath(@__DIR__, "..", "results", "simulation_study", "poisson")
 const K_TRUE = 3
@@ -13,18 +14,12 @@ fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 # The run script's "prior" birth draws from the conjugate conditional, hence "Conj".
 legend_name(b) = get(Dict("conjugate" => "gibbs", "prior" => "conj"), b, b)
 
-const CLUSTER_COLS = palette(:tab10)[1:K_TRUE]
+const CLUSTER_COLS = CATEGORICAL[1:K_TRUE]
 
-const BIRTH_COLOURS = Dict(
-    "conjugate" => :black,
-    "prior" => :gray,
-    "nmm" => palette(:blues, 5)[3:5],
-    "lnmm" => palette(:reds, 5)[3:5],
-)
+# Colour by birth proposal; the fixed-dim strategy is the line style.
+const BIRTH_COLOURS = Dict("conjugate" => OI_BLACK, "prior" => OI_GREY, "nmm" => OI_BLUE, "lnmm" => OI_VERMILLION)
 
-method_colour(birth, fdim) =
-    birth in ("conjugate", "prior") ? BIRTH_COLOURS[birth] :
-    fdim == "none" ? BIRTH_COLOURS[birth][1] : BIRTH_COLOURS[birth][2]
+method_colour(birth, fdim) = BIRTH_COLOURS[birth]
 
 method_style(fdim) = fdim == "resample" ? :dash : :solid
 

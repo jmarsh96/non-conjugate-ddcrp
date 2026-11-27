@@ -14,6 +14,7 @@ include(joinpath(@__DIR__, "model_comparison.jl"))
 include(joinpath(@__DIR__, "dengue_common.jl"))
 
 ENV["GKSwstype"] = "nul"   # headless GR
+include(joinpath(@__DIR__, "plot_style.jl"))
 
 const IS_TEST = "--test" in ARGS
 const OUTDIR = IS_TEST ?
@@ -90,7 +91,7 @@ println("Loaded $(length(chains)) chains over $N municipalities; selected sample
 # Figure: posterior of K and traces
 
 println("Generating P(K) and traces...")
-const CHAIN_COLOURS = [:steelblue, :darkorange, :seagreen, :purple, :firebrick]
+const CHAIN_COLOURS = CATEGORICAL[1:6]
 chain_colour(i) = CHAIN_COLOURS[mod1(i, length(CHAIN_COLOURS))]
 k_traces = Dict(l => calculate_n_clusters(chains[l].c) for l in nb_labels)
 let
@@ -99,9 +100,9 @@ let
                 legend = :topright)
     for (i, l) in enumerate(nb_labels)
         kt = k_traces[l]
-        bar!(p1, allK, [count(==(k), kt) / length(kt) for k in allK];
-             bar_width = 0.85, lw = 0, fillalpha = 0.45, color = chain_colour(i),
-             label = "chain $i")
+        pk = [count(==(k), kt) / length(kt) for k in allK]
+        plot!(p1, vcat(allK .- 0.5, allK[end] + 0.5), vcat(pk, pk[end]); seriestype = :steppost,
+              lw = 1.5, color = chain_colour(i), label = "chain $i")
     end
     ps = Any[]
     for (i, l) in enumerate(nb_labels)
@@ -233,7 +234,7 @@ let
             span = (hi + pad) - (lo - pad)
             tickpos = [(lo - pad) + f * span for f in (0.18, 0.5, 0.82)]
             h = histogram(t_rep; bins = edges,
-                          color = :grey70, lw = 0, legend = false,
+                          color = colorant"#BBBBBB", lw = 0, legend = false,
                           xlims = (lo - pad, hi + pad),
                           xticks = (tickpos, tick_label.(tickpos)),
                           ylims = (0, 1.18 * maximum(counts)),
@@ -241,7 +242,7 @@ let
                           titlefontsize = 11, yticks = false,
                           ylabel = sname == first(plotted) ? rowname : "",
                           guidefontsize = 10)
-            vline!(h, [t_obs]; lw = 2.5, color = :firebrick)
+            vline!(h, [t_obs]; lw = 2.5, color = OI_VERMILLION)
             push!(ps, h)
         end
     end

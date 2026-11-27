@@ -12,6 +12,7 @@ using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase, 
 include(joinpath(@__DIR__, "dengue_common.jl"))   # split_rhat, dahl_point_estimate
 
 ENV["GKSwstype"] = "nul"   # headless GR
+include(joinpath(@__DIR__, "plot_style.jl"))
 
 const IS_TEST = "--test" in ARGS
 const TABLES_ONLY = "--tables" in ARGS
@@ -304,18 +305,18 @@ end
 
 # Figure
 
-const C_GIBBS = Dict("mm" => colorant"#2a78d6", "prior" => colorant"#eb6834")
-const POOL_STYLE = [(("mm", "prior"), colorant"#b0233c", :diamond),
-                    (("mm", "metropolised"), colorant"#00938f", :utriangle),
-                    (("prior", "metropolised"), colorant"#7a5c00", :dtriangle)]
+const C_GIBBS = Dict("mm" => OI_BLUE, "prior" => OI_ORANGE)
+const POOL_STYLE = [(("mm", "prior"), OI_VERMILLION, :diamond),
+                    (("mm", "metropolised"), OI_GREEN, :utriangle),
+                    (("prior", "metropolised"), OI_PURPLE, :dtriangle)]
 poolname(q, link) = "RJ pool q:$(q) link:$(link)"
 const RJ_STYLE = Dict(
-    "RJ q:mm link:uniform" => (colorant"#1baf7a", :dash),
-    "RJ q:mm link:prior" => (colorant"#eda100", :dot),
-    "RJ q:prior link:uniform" => (colorant"#e87ba4", :dashdot),
-    "RJ q:prior link:prior" => (colorant"#008300", :dashdotdot),
-    "RJ q:prior link:uniform + Resample" => (colorant"#6250d6", :dash),
-    "Collapsed Gibbs" => (colorant"#0b0b0b", :solid),
+    "RJ q:mm link:uniform" => (OI_SKY, :dash),
+    "RJ q:mm link:prior" => (OI_SKY, :dot),
+    "RJ q:prior link:uniform" => (OI_GREY, :dash),
+    "RJ q:prior link:prior" => (OI_GREY, :dot),
+    "RJ q:prior link:uniform + Resample" => (OI_GREY, :dashdot),
+    "Collapsed Gibbs" => (OI_BLACK, :solid),
 )
 
 function panel(d, col, title, ylab)

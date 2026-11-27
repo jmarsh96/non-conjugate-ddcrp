@@ -5,6 +5,7 @@ using DistanceDependentCRP, StatsPlots, DataFrames, CSV, Statistics, StatsBase, 
 include(joinpath(@__DIR__, "skewnormal_model.jl"))
 
 ENV["GKSwstype"] = "nul"   # headless GR
+include(joinpath(@__DIR__, "plot_style.jl"))
 
 # Tables and figures for the skew-normal study, from the summaries of run_skewnormal.jl and
 # geweke_skewnormal.jl and the first seed's saved chains. Unless --test, copies the paper
@@ -17,7 +18,7 @@ const K_TRUE = 3
 
 fmtlabel(s) = replace(lowercase(s), r"[^a-z0-9]+" => "_")
 
-const CLUSTER_COLS = palette(:tab10)[1:K_TRUE]
+const CLUSTER_COLS = CATEGORICAL[1:K_TRUE]
 
 # LaTeX comparison table, one per fixed-dim strategy
 
@@ -150,33 +151,7 @@ for sname in ["overlapping", "separated"]
         end
     end
 
-    # Figure 1: P(K), split by fixed-dim strategy
-    println("  Generating P(K) distribution figure...")
-    let
-        ks = 1:(K_TRUE + 4)
-        panels = Any[]
-        for fd in ["none", "resample"]
-            sub = filter(r -> r.fdim == fd, final_df)
-            labs = String[]; pk_mat = Matrix{Float64}(undef, 0, length(ks))
-            # Pooled over every seed, from the pk_k columns of the summary.
-            for row in eachrow(sub)
-                pk_mat = vcat(pk_mat, [row[Symbol("pk_$k")] for k in ks]')
-                push!(labs, row.birth)
-            end
-            p = groupedbar(pk_mat'; bar_position=:dodge,
-                xticks=(1:length(ks), string.(ks)), xlabel="K", ylabel="P(K=k)",
-                label=reshape(labs, 1, :), legend=:topright, legendfontsize=6,
-                title="fixed-dim: $fd", titlefontsize=10)
-            vline!(p, [K_TRUE]; color=:black, linestyle=:dash, linewidth=1.5, label="K*=$K_TRUE")
-            push!(panels, p)
-        end
-        fig = plot(panels...; layout=(2, 1), size=(950, 700),
-                   left_margin=10Plots.mm, bottom_margin=8Plots.mm)
-        savefig(fig, joinpath(figdir, "pk_distribution.png"))
-        println("    Saved pk_distribution.png")
-    end
-
-    # Figure 2: data overview
+    # Figure: data overview
     println("  Generating data overview figure...")
     let
         true_labels = compute_table_assignments(sim.c)
@@ -212,7 +187,7 @@ for sname in ["overlapping", "separated"]
         hline!(p_k, [K_TRUE]; color=:black, linestyle=:dash, linewidth=1.5, label="K* = $K_TRUE")
         p_alpha = plot(xlabel="Post-burnin iteration (thinned)", ylabel="α (ddCRP)", legend=:topright,
                        tickfontsize=10, guidefontsize=12, left_margin=10Plots.mm, bottom_margin=8Plots.mm)
-        cols = palette(:tab10)
+        cols = CATEGORICAL
         for (i, row) in enumerate(eachrow(show_rows))
             haskey(chains, row.label) || continue
             ch = chains[row.label]
@@ -265,6 +240,39 @@ for sname in ["overlapping", "separated"]
     println()
 end
 
+# P(K): rows are fixed-dim strategies, columns scenarios, one legend below
+function pk_figure()
+    ks = 1:(K_TRUE + 4)
+    dfs = Dict(s => DataFrame(CSV.File(joinpath(OUTDIR, s, "summary_final_$(s).csv")))
+               for s in ("overlapping", "separated") if isfile(joinpath(OUTDIR, s, "summary_final_$(s).csv")))
+    length(dfs) == 2 || return @warn "Missing a skew-normal summary: P(K) figure skipped"
+    births = unique(dfs["overlapping"].birth)
+    cols = CATEGORICAL[1:length(births)]
+    panels = Any[]
+    for fd in ("none", "resample"), s in ("overlapping", "separated")
+        sub = filter(r -> r.fdim == fd, dfs[s])
+        pk = reduce(hcat, [[only(sub[sub.birth .== b, Symbol("pk_$k")]) for k in ks] for b in births])
+        p = groupedbar(pk; bar_position = :dodge, color = reshape(cols, 1, :), linecolor = :match,
+                       xticks = (1:length(ks), string.(ks)), xlabel = "K", ylims = (0, 1.05 * maximum(pk)),
+                       ylabel = s == "overlapping" ? "P(K = k)" : "", legend = false,
+                       title = "$(uppercasefirst(s)), fixed-dim: $fd", titlefontsize = 12,
+                       tickfontsize = 10, guidefontsize = 12)
+        vline!(p, [K_TRUE]; color = :black, linestyle = :dash, linewidth = 1.5)
+        push!(panels, p)
+    end
+    leg = plot(framestyle = :none, legend = :top, legend_columns = 3, legendfontsize = 12,
+               foreground_color_legend = nothing, background_color_legend = nothing)
+    for (b, c) in zip(births, cols)
+        plot!(leg, [NaN], [NaN]; seriestype = :shape, color = c, linecolor = c, label = b)
+    end
+    plot!(leg, [NaN], [NaN]; color = :black, linestyle = :dash, linewidth = 1.5, label = "K* = $K_TRUE")
+    fig = plot(plot(panels...; layout = (2, 2)), leg; layout = grid(2, 1; heights = [0.85, 0.15]),
+               size = (1100, 780), left_margin = 8Plots.mm, bottom_margin = 4Plots.mm)
+    savefig(fig, joinpath(OUTDIR, "pk_distribution.png"))
+    println("P(K) figure → $(joinpath(OUTDIR, "pk_distribution.png"))")
+end
+pk_figure()
+
 generate_geweke_tables(joinpath(OUTDIR, "geweke"))
 println("Analysis complete. Figures and tables in: $OUTDIR")
 
@@ -278,12 +286,12 @@ else
     for sname in ["overlapping", "separated"]
         sdir = joinpath(OUTDIR, sname)
         push!(copies,
-            joinpath(sdir, "figures", "pk_distribution.png") => joinpath("figures", "skew_pk_$sname.png"),
             joinpath(sdir, "figures", "data_overview.png") => joinpath("figures", "skew_data_overview_$sname.png"),
             (joinpath(sdir, "table_$(sname)_$f.tex") => joinpath("tables", "table_skew_$(sname)_$f.tex")
              for f in values(FDIM_FILE))...)
     end
     push!(copies,
+        joinpath(OUTDIR, "pk_distribution.png") => joinpath("figures", "skew_pk.png"),
         joinpath(OUTDIR, "separated", "figures", "param_recovery.png") => joinpath("figures", "skew_param_recovery.png"),
         (joinpath(OUTDIR, "geweke", "table_geweke_$f.tex") => joinpath("tables", "table_skew_geweke_$f.tex")
          for f in ("noupdate", "resample", "rerun"))...)

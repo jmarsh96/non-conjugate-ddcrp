@@ -1,6 +1,6 @@
 metric,value
-ess_logpost,9539.24001664
-ess_K,7986.236935076457
-ess_alpha_min,7733.8670417840685
+ess_logpost,9449.006165803634
+ess_K,8083.698973983256
+ess_alpha_min,8138.359091705394
 ess_alpha_max,10000.0
-ess_alpha_median,9988.308628970375
+ess_alpha_median,10000.0
